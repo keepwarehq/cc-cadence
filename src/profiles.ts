@@ -25,7 +25,7 @@ export const isThirdParty = (p: Profile): boolean => !!p.baseUrl;
 const STRIP = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|ELECTRON_RUN_AS_NODE$)/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export function buildEnv(base: NodeJS.ProcessEnv, p: Profile, key?: string): NodeJS.ProcessEnv {
+export function buildEnv(base: NodeJS.ProcessEnv, p: Profile, key?: string, globalEnv?: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (!STRIP.test(k)) env[k] = v;
   if (p.baseUrl) {
@@ -37,6 +37,8 @@ export function buildEnv(base: NodeJS.ProcessEnv, p: Profile, key?: string): Nod
     set('ANTHROPIC_DEFAULT_SONNET_MODEL', p.models?.sonnet ?? p.model);
     set('ANTHROPIC_DEFAULT_HAIKU_MODEL', p.models?.haiku ?? p.model);
   }
+  // precedence: profile env > global claudeEnv > built-ins > ambient
+  for (const [k, v] of Object.entries(globalEnv ?? {})) if (ENV_NAME.test(k) && typeof v === 'string') env[k] = v;
   for (const [k, v] of Object.entries(p.env ?? {})) if (ENV_NAME.test(k) && typeof v === 'string') env[k] = v;
   return env;
 }

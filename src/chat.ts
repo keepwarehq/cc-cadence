@@ -5,6 +5,7 @@ import { PERMISSION_MODES, PermissionMode, Profile, buildEnv, expandHome, isThir
 import { TurnHandle, runTurn } from './runner';
 import { addProfile, keyName, manageProfiles } from './profileUi';
 import { SessionSummary, deleteSession, listSessions, readTranscript } from './sessions';
+import { SettingsFile, writeSettingsFile } from './settingsFile';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
@@ -19,6 +20,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   private running?: TurnHandle;
   private turn?: TurnTranslator;
   private stopping = false;
+  private settings?: SettingsFile;
   private mode: PermissionMode;
   private status: Status = {};
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -71,6 +73,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       if (!key) return this.notice('error', `"${profile.label}" has no API key yet: set one via "Manage models…" in the profile dropdown.`);
     }
     const claudePath = expandHome(vscode.workspace.getConfiguration('ccprofile').get<string>('claudePath') || '~/.local/bin/claude');
+    const cfg = vscode.workspace.getConfiguration('ccprofile');
     const mode = this.mode;
     const resumed = !!this.sessionId;
     this.transcript.push({ kind: 'user', text, profile: profile.label });
@@ -100,10 +103,11 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 
     this.stopping = false;
     this.turn = turn;
+    this.settings = await writeSettingsFile(cfg.get<Record<string, unknown>>('claudeSettings'));
     this.running = runTurn({
       claudePath,
       cwd: folder.uri.fsPath,
-      env: buildEnv(process.env, profile, key),
+      env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
       prompt: text,
       permissionMode: mode,
       sessionId: this.sessionId,
@@ -114,6 +118,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const exit = await this.running.done;
     this.running = undefined;
     this.setBusy(false);
+    void this.settings?.dispose();
+    this.settings = undefined;
     if (this.turn !== turn) return; // "New chat" was pressed while running; drop this turn's results
     this.turn = undefined;
 
@@ -247,6 +253,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   dispose(): void {
     this.turn?.detach();
     this.running?.stop();
+    void this.settings?.dispose();
     this.disposables.forEach(d => d.dispose());
   }
 

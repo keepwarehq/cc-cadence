@@ -130,6 +130,20 @@
           ],
           "description": "Permission mode each window opens with (maps to claude --permission-mode). Can be switched temporarily in the panel."
         },
+        "ccprofile.claudeEnv": {
+          "type": "object",
+          "default": {},
+          "description": "Environment variables passed to every spawned claude process (e.g. CLAUDE_CODE_MAX_CONTEXT_TOKENS, CLAUDE_CODE_AUTO_COMPACT_WINDOW, API_TIMEOUT_MS). Profile-level env takes priority.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "ccprofile.claudeSettings": {
+          "type": "object",
+          "default": {},
+          "description": "Extra keys passed to claude via --settings (e.g. effortLevel). model is overridden by the active profile's model.",
+          "additionalProperties": true
+        },
         "ccprofile.profiles": {
           "type": "array",
           "default": [],
