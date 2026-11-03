@@ -5,12 +5,13 @@ A personal VS Code extension: one chat panel that switches between Claude (Max s
 ## Features
 
 - **Many profiles, one panel** — the built-in Claude profile runs the local `claude -p` on its own `/login` Max subscription. Other profiles point at any Anthropic-compatible endpoint with a Base URL + API key, so every model gets the same tools: read/write files, run commands, subagents.
-- **Session history** — conversations are stored by the CLI itself. Open History (🕘 in the composer) to reopen any past session, resume it, or delete it.
+- **Session history** — conversations are stored by the CLI itself. The clock button at the top right of the panel drops down the session list (search by title); click one to resume it, or × twice to delete it.
 - **Attachments** — paste a screenshot from the clipboard, drag files onto the composer, or use ＋. Images go straight to the model as base64 blocks; other files are staged under `.ccprofile/attachments/` and handed to the model as paths.
 - **@-mentions** — type `@` to fuzzy-search files and folders and drop a path into the message.
 - **Extra Claude Code parameters** — `ccprofile.claudeEnv` injects environment variables (e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); `ccprofile.claudeSettings` passes settings keys (e.g. `effortLevel`) via `--settings`.
 - **Background tasks** — background subagents and shells show up as live task cards. The CLI waits for them and wakes itself up when they finish, in the same conversation.
 - **Interrupt-and-replace** — sending a message while the model is still running stops the current run and starts the new message on the same session. Your latest word always wins.
+- **Attachments** — ＋ → Upload from computer opens the picker of the machine VS Code runs on (under Remote that is your laptop, not the server); paste and drag-and-drop work too.
 - **Permission modes** — opens with `bypassPermissions` (tools never ask). Switch per window from the composer pill. Only use in trusted workspaces.
 
 ## Getting started
@@ -18,7 +19,7 @@ A personal VS Code extension: one chat panel that switches between Claude (Max s
 1. Log in once: run `claude` in a terminal and `/login` with your Max account.
 2. Click the ccprofile icon in the activity bar to open the Chat panel.
 3. Type and press Enter to send (Shift+Enter for a newline). Enter during IME composition never sends.
-4. Switch models with the pill at the bottom of the composer (same vendor resumes the session; switching vendors starts a new session).
+4. Switch models with the pill at the bottom of the composer: pick the provider, its model (Claude: Default / Opus / Sonnet / Haiku / Fable; other profiles: the aliases mapped in `models`) and the effort level (`--effort` low … max). The pill shows the choice, e.g. `Claude (Max) · fable · high effort`. The same vendor resumes the session; switching vendors starts a new session.
 5. Switch the permission mode with the pill next to it (e.g. `plan` for read-only).
 
 If a switch doesn't seem to take effect, run `ccprofile: Doctor` from the command palette.

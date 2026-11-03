@@ -14,6 +14,8 @@
   const agentsBtn = $('agents');
   const agentsPopup = $('agents-popup');
   const modePopup = $('mode-popup');
+  const profilePopup = $('profile-popup');
+  const fileInput = $('file-input');
   const statusEl = $('status');
 
   /** @type {any[]} */
@@ -24,6 +26,14 @@
   let activeId = '';
   /** @type {Record<string, string>} */
   const profileLabels = {};
+  /** @type {{id: string, label: string, description?: string}[]} */
+  let profiles = [];
+  /** @type {{id: string, label: string, detail?: string}[]} */
+  let modelChoices = [];
+  let currentModel = 'default';
+  /** @type {{id: string, label: string, detail?: string}[]} */
+  let effortChoices = [];
+  let currentEffort = 'default';
   /** @type {string[]} */
   let modes = [];
   let currentMode = '';
@@ -246,6 +256,7 @@
   ];
 
   function renderModePopup() {
+    closeProfileMenu();
     modePopup.replaceChildren(...MODE_INFO
       .filter(([id]) => modes.includes(id))
       .map(([id, label, desc]) => {
@@ -263,6 +274,65 @@
   function closeModeMenu() { modePopup.hidden = true; }
 
   modePill.addEventListener('click', () => (modePopup.hidden ? renderModePopup() : closeModeMenu()));
+
+  /** Single-line menu row: label left, dim detail right (keeps provider + model + effort on one screen) */
+  function menuRow(label, desc, active, onPick) {
+    const row = el('div', 'menu-row' + (active ? ' active' : ''));
+    row.append(el('span', 'menu-label', label));
+    if (desc) row.append(el('span', 'menu-desc', desc));
+    row.addEventListener('click', () => { onPick(); closeProfileMenu(); });
+    return row;
+  }
+
+  /** Provider rows, then the active provider's model rows, then the add/manage actions */
+  function renderProfilePopup() {
+    closeModeMenu();
+    const rows = [el('div', 'menu-header', 'Provider')];
+    for (const p of profiles) {
+      const row = menuRow(p.label, p.description, p.id === activeId, () => vscode.postMessage({ type: 'setProfile', id: p.id }));
+      row.dataset.profile = p.id;
+      rows.push(row);
+    }
+    if (modelChoices.length > 1) {
+      rows.push(el('div', 'menu-header', 'Model'));
+      for (const c of modelChoices) {
+        const row = menuRow(c.label, c.detail, c.id === currentModel, () => vscode.postMessage({ type: 'setModel', model: c.id }));
+        row.dataset.model = c.id;
+        rows.push(row);
+      }
+    }
+    if (effortChoices.length > 1) rows.push(effortRow());
+    rows.push(el('div', 'menu-sep'));
+    rows.push(menuRow('Add model\u2026', '', false, () => vscode.postMessage({ type: 'addProfile' })));
+    rows.push(menuRow('Manage models\u2026', '', false, () => vscode.postMessage({ type: 'manageProfiles' })));
+    profilePopup.replaceChildren(...rows);
+    profilePopup.hidden = false;
+  }
+
+  function closeProfileMenu() { profilePopup.hidden = true; }
+
+  /** One slider row: a dot per level; clicking the active dot goes back to default (no --effort) */
+  function effortRow() {
+    const row = el('div', 'effort-row');
+    const current = effortChoices.find(c => c.id === currentEffort && c.id !== 'default');
+    row.append(el('span', 'effort-label', 'Effort'), el('span', 'effort-value', current ? current.label : 'Default'));
+    const track = el('div', 'effort-track');
+    for (const c of effortChoices.filter(x => x.id !== 'default')) {
+      const dot = el('div', 'effort-dot' + (c.id === currentEffort ? ' active' : ''));
+      dot.dataset.effort = c.id;
+      dot.title = c.label + ' (' + c.detail + ')';
+      dot.addEventListener('click', () => {
+        currentEffort = c.id === currentEffort ? 'default' : c.id;
+        vscode.postMessage({ type: 'setEffort', effort: currentEffort });
+        row.replaceWith(effortRow());
+      });
+      track.appendChild(dot);
+    }
+    row.appendChild(track);
+    return row;
+  }
+
+  profilePill.addEventListener('click', () => (profilePopup.hidden ? renderProfilePopup() : closeProfileMenu()));
 
   function updateAgents() {
     const running = items.filter(x => x?.kind === 'task' && x.status === 'running');
@@ -318,9 +388,19 @@
 
   function applyState(m) {
     activeId = m.activeId;
+    profiles = m.profiles;
     for (const p of m.profiles) profileLabels[p.id] = p.label;
+    modelChoices = m.modelChoices || [];
+    currentModel = m.model || 'default';
+    effortChoices = m.effortChoices || [];
+    currentEffort = m.effort || 'default';
     modes = m.modes;
-    profilePill.textContent = profileLabels[activeId] || activeId;
+    profilePill.textContent = [
+      profileLabels[activeId] || activeId,
+      currentModel !== 'default' ? currentModel : '',
+      currentEffort !== 'default' ? currentEffort + ' effort' : '',
+    ].filter(Boolean).join(' \u00b7 ');
+    if (!profilePopup.hidden) renderProfilePopup();
     currentMode = m.mode;
     modePill.textContent = modeLabel(m.mode);
     modePill.classList.toggle('bypass', m.mode === 'bypassPermissions');
@@ -348,10 +428,94 @@
 
   sendBtn.addEventListener('click', send);
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
-  $('attach').addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+
+  // The ＋ button has a single action, so it opens the file picker directly (no menu).
+  $('attach').addEventListener('click', () => fileInput.click());
+
+  // ---- Session history: opened from the view title bar (host sends the list), drops down at the top right ----
+
+  const historyPopup = $('history-popup');
+  const historySearch = el('input', 'history-search');
+  historySearch.type = 'text';
+  historySearch.placeholder = 'Search sessions\u2026';
+  const historyList = el('div', 'history-list');
+  historyPopup.append(historySearch, historyList);
+  /** @type {{id: string, title: string, ago: string}[]} */
+  let sessions = [];
+  let currentSession = '';
+
+  function renderHistoryList() {
+    const q = historySearch.value.trim().toLowerCase();
+    const shown = sessions.filter(s => !q || s.title.toLowerCase().includes(q));
+    if (!shown.length) {
+      historyList.replaceChildren(el('div', 'history-empty', sessions.length ? 'No matching sessions' : 'No saved sessions for this folder yet.'));
+      return;
+    }
+    historyList.replaceChildren(...shown.map(s => {
+      const row = el('div', 'history-row' + (s.id === currentSession ? ' active' : ''));
+      row.dataset.session = s.id;
+      const del = el('span', 'history-delete', '\u00d7');
+      del.title = 'Delete session';
+      del.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!del.classList.contains('armed')) {
+          del.classList.add('armed');
+          del.textContent = 'Delete?';
+          return;
+        }
+        vscode.postMessage({ type: 'deleteSession', id: s.id });
+      });
+      row.append(el('span', 'history-title', s.title), el('span', 'history-ago', s.ago), del);
+      row.addEventListener('click', () => {
+        closeHistory();
+        vscode.postMessage({ type: 'resumeSession', id: s.id });
+      });
+      return row;
+    }));
+  }
+
+  function openHistory(m) {
+    if (historyPopup.hidden) historySearch.value = '';
+    sessions = m.items || [];
+    currentSession = m.current || '';
+    closeModeMenu();
+    closeProfileMenu();
+    historyPopup.hidden = false;
+    renderHistoryList();
+    historySearch.focus();
+  }
+
+  function closeHistory() { historyPopup.hidden = true; }
+
+  historySearch.addEventListener('input', renderHistoryList);
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    closeHistory();
+    closeModeMenu();
+    closeProfileMenu();
+  });
+  // Every composer popup closes when a mousedown lands outside both it and the pill that opens it.
+  // mousedown (not click) so it fires before the pill's own click re-toggles.
+  const OUTSIDE_CLOSE = [
+    [historyPopup, null, closeHistory],
+    [profilePopup, profilePill, closeProfileMenu],
+    [modePopup, modePill, closeModeMenu],
+    [agentsPopup, agentsBtn, closeAgents],
+  ];
+  document.addEventListener('mousedown', e => {
+    const target = /** @type {Node} */ (e.target);
+    for (const [popup, pill, close] of OUTSIDE_CLOSE) {
+      if (popup.hidden) continue;
+      if (popup.contains(target)) continue;
+      if (pill && pill.contains(target)) continue;
+      close();
+    }
+  });
+  fileInput.addEventListener('change', () => {
+    for (const f of [...(fileInput.files ?? [])]) fileToAttachment(f, m => vscode.postMessage(m));
+    fileInput.value = '';
+  });
   $('mention').addEventListener('click', () => { insertMention('@'); input.focus(); });
-  $('history').addEventListener('click', () => vscode.postMessage({ type: 'history' }));
-  profilePill.addEventListener('click', () => vscode.postMessage({ type: 'pickProfile' }));
   // ---- Attachment input: paste and drop ----
 
   let attachSeq = 0;
@@ -489,6 +653,7 @@
     const m = ev.data;
     if (m.type === 'state') applyState(m);
     else if (m.type === 'op') applyOp(m);
+    else if (m.type === 'sessions') openHistory(m);
     else if (m.type === 'busy') setBusy(m.busy);
     else if (m.type === 'status') statusEl.textContent = m.text || '';
     else if (m.type === 'thumbs') {

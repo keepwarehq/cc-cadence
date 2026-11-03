@@ -84,3 +84,19 @@ test('runTurn events still flow through TurnTranslator', async () => {
   assert.equal(tr.sessionId, 'stub-1');
   assert.ok(tr.gotResult);
 });
+
+test('runTurn passes --model and --effort only when set', async () => {
+  const run = async extra => {
+    writeFileSync(record, '', 'utf8');
+    const h = runTurn({ claudePath: stub, cwd: tmpdir(), env: env(), message: { text: 'hi', blocks: [] },
+      permissionMode: 'bypassPermissions', onEvent: () => {}, ...extra });
+    await h.done;
+    return JSON.parse(readFileSync(record, 'utf8')).argv;
+  };
+  const withBoth = await run({ model: 'fable', effort: 'xhigh' });
+  assert.equal(withBoth[withBoth.indexOf('--model') + 1], 'fable');
+  assert.equal(withBoth[withBoth.indexOf('--effort') + 1], 'xhigh');
+  const without = await run({});
+  assert.equal(without.includes('--model'), false);
+  assert.equal(without.includes('--effort'), false);
+});

@@ -33,3 +33,24 @@ test('invalid env keys are skipped', () => {
   assert.equal(env['bad-key'], undefined);
   assert.equal(env.GOOD_KEY, 'y');
 });
+
+test('resolveModel maps selection through profile aliases', async () => {
+  const { resolveModel, modelChoices } = await import('../out/profiles.js');
+  const claude = { id: 'claude', label: 'Claude (Max)' };
+  assert.equal(resolveModel(claude, undefined), undefined);
+  assert.equal(resolveModel(claude, 'default'), undefined);
+  assert.equal(resolveModel(claude, 'opus'), 'opus');
+  assert.equal(resolveModel(claude, 'fable'), 'fable');
+  const glm = { id: 'g', label: 'G', baseUrl: 'https://e.test', model: 'glm-x', models: { sonnet: 'glm-s', opus: 'glm-o' } };
+  assert.equal(resolveModel(glm, 'default'), 'glm-x');
+  assert.equal(resolveModel(glm, 'sonnet'), 'glm-s');
+  assert.equal(resolveModel(glm, 'haiku'), 'glm-x');
+  assert.deepEqual(modelChoices(claude), ['default', 'opus', 'sonnet', 'haiku', 'fable']);
+  assert.deepEqual(modelChoices(glm), ['default', 'sonnet', 'opus']);
+});
+
+test('effort levels match claude --effort', async () => {
+  const { EFFORT_LEVELS, effortChoices } = await import('../out/profiles.js');
+  assert.deepEqual([...EFFORT_LEVELS], ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(effortChoices(), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+});

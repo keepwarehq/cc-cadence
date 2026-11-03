@@ -10,17 +10,20 @@ const { Transcript, TurnTranslator } = require('../out/transcript.js');
 
 const read = p => readFileSync(new URL(p, import.meta.url), 'utf8');
 const BODY = `
+<div id="history-popup" hidden></div>
 <main id="log"></main>
 <footer>
   <div id="mention-popup" hidden></div>
   <div id="agents-popup" hidden></div>
   <div id="mode-popup" hidden></div>
+  <div id="profile-popup" hidden></div>
   <div id="status"></div>
   <div id="chips"></div>
   <div class="composer" id="composer">
     <textarea id="input"></textarea>
+    <input type="file" id="file-input" multiple hidden>
     <div class="toolbar">
-      <button id="attach" title="Upload from computer">＋</button><button id="mention">@</button><button id="history">🕘</button>
+      <button id="attach" title="Upload from computer">＋</button><button id="mention">@</button>
       <button id="profile"></button><button id="mode"></button><span class="spacer"></span>
       <button id="agents" hidden>⚡</button><button id="stop" hidden>⏹</button><button id="send">Send</button>
     </div>
@@ -42,8 +45,28 @@ function boot() {
 
 const STATE = {
   type: 'state',
-  profiles: [{ id: 'claude', label: 'Claude (Max)' }, { id: 'glm', label: 'GLM' }],
+  profiles: [
+    { id: 'claude', label: 'Claude (Max)', description: 'local claude -p · Max subscription' },
+    { id: 'glm', label: 'GLM', description: 'http://localhost:11240' },
+  ],
   activeId: 'claude',
+  model: 'default',
+  modelChoices: [
+    { id: 'default', label: 'Default', detail: 'claude CLI default' },
+    { id: 'opus', label: 'Opus', detail: '--model opus' },
+    { id: 'sonnet', label: 'Sonnet', detail: '--model sonnet' },
+    { id: 'haiku', label: 'Haiku', detail: '--model haiku' },
+    { id: 'fable', label: 'Fable', detail: '--model fable' },
+  ],
+  effort: 'default',
+  effortChoices: [
+    { id: 'default', label: 'Default', detail: 'claude CLI default' },
+    { id: 'low', label: 'Low', detail: '--effort low' },
+    { id: 'medium', label: 'Medium', detail: '--effort medium' },
+    { id: 'high', label: 'High', detail: '--effort high' },
+    { id: 'xhigh', label: 'XHigh', detail: '--effort xhigh' },
+    { id: 'max', label: 'Max', detail: '--effort max' },
+  ],
   mode: 'bypassPermissions',
   modes: ['bypassPermissions', 'acceptEdits', 'plan'],
   busy: false,
@@ -62,12 +85,13 @@ test('posts ready on boot; state fills the composer pills', () => {
   assert.equal($('mode').textContent, 'Plan');
 });
 
-test('picking a profile posts pickProfile; the mode pill opens a mode menu', () => {
+test('the profile pill opens its menu; the mode pill opens a mode menu and closes the profile one', () => {
   const { window, posted, send, $ } = boot();
   send(STATE);
   $('profile').click();
-  assert.deepEqual(posted.at(-1), { type: 'pickProfile' });
+  assert.equal($('profile-popup').hidden, false, 'profile menu opens in the panel, no QuickPick round-trip');
   $('mode').click();
+  assert.equal($('profile-popup').hidden, true, 'only one menu open at a time');
   const popup = $('mode-popup');
   assert.equal(popup.hidden, false, 'mode menu opens');
   assert.ok(popup.textContent.includes('Bypass permissions'));
@@ -299,10 +323,154 @@ test('agents pill hides when there are no task items', async () => {
 });
 
 
-test('attach button asks the host to open the file dialog', () => {
+test('+ opens the local file picker directly (no menu), not the host dialog', async () => {
+  const { window, posted, send, $ } = boot();
+  send(STATE);
+  const fileInput = $('file-input');
+  let picked = 0;
+  fileInput.click = () => { picked++; };
+  $('attach').click();
+  assert.equal(picked, 1, 'one click opens the webview file picker (local machine under Remote)');
+  assert.equal(posted.some(m => m.type === 'attach'), false, 'no host-side dialog');
+  const realFR = window.FileReader;
+  window.FileReader = class {
+    readAsDataURL() { this.result = 'data:text/plain;base64,aGk='; this.onloadend(); }
+  };
+  Object.defineProperty(fileInput, 'files', { configurable: true, value: [{ name: 'notes.txt', type: 'text/plain' }] });
+  fileInput.dispatchEvent(new window.Event('change'));
+  await new Promise(r => setImmediate(r));
+  window.FileReader = realFR;
+  const msg = posted.find(m => m.type === 'attachFile');
+  assert.ok(msg, 'picked file posted like a drop');
+  assert.equal(msg.name, 'notes.txt');
+  assert.equal(fileInput.value, '', 'reset so the same file can be picked again');
+});
+
+test('model pill opens a menu with profiles and models; picking posts setModel/setProfile', () => {
   const { posted, send, $ } = boot();
   send(STATE);
-  $('attach').click();
-  assert.deepEqual(posted.at(-1), { type: 'attach' });
-  assert.equal($('attach').title, 'Upload from computer');
+  $('profile').click();
+  const popup = $('profile-popup');
+  assert.equal(popup.hidden, false, 'profile menu opens');
+  assert.ok(popup.textContent.includes('GLM'), 'other profiles listed');
+  assert.ok(popup.textContent.includes('Max subscription'), 'profile description shown');
+  const opusRow = [...popup.querySelectorAll('[data-model]')].find(r => r.dataset.model === 'opus');
+  assert.ok(opusRow, 'model rows listed for the active profile');
+  opusRow.click();
+  assert.deepEqual(posted.at(-1), { type: 'setModel', model: 'opus' });
+  assert.equal(popup.hidden, true);
+  $('profile').click();
+  [...popup.querySelectorAll('[data-profile]')].find(r => r.dataset.profile === 'glm').click();
+  assert.deepEqual(posted.at(-1), { type: 'setProfile', id: 'glm' });
+});
+
+test('pill label carries the selected model', () => {
+  const { send, $ } = boot();
+  send({ ...STATE, model: 'opus' });
+  assert.equal($('profile').textContent, 'Claude (Max) · opus');
+  send({ ...STATE, model: 'default' });
+  assert.equal($('profile').textContent, 'Claude (Max)');
+});
+
+test('every element chat.js looks up exists in the real webview HTML', () => {
+  const ids = new Set([...read('../media/chat.js').matchAll(/\$\('([\w-]+)'\)/g)].map(m => m[1]));
+  const html = read('../src/chat.ts');
+  assert.deepEqual([...ids].filter(id => !html.includes(`id="${id}"`)), []);
+});
+
+test('effort is a 5-dot slider: click a dot posts setEffort, clicking the active dot resets to default', () => {
+  const { posted, send, $ } = boot();
+  send(STATE);
+  $('profile').click();
+  const popup = $('profile-popup');
+  assert.ok(popup.textContent.includes('Effort'), 'effort row shown');
+  const dots = [...popup.querySelectorAll('.effort-dot')];
+  assert.deepEqual(dots.map(d => d.dataset.effort), ['low', 'medium', 'high', 'xhigh', 'max'], 'one dot per level, no per-level rows');
+  assert.equal(popup.querySelectorAll('.mode-row[data-effort]').length, 0);
+  dots[2].click();
+  assert.deepEqual(posted.at(-1), { type: 'setEffort', effort: 'high' });
+  assert.equal(popup.hidden, false, 'slider keeps the menu open');
+  assert.ok(popup.querySelector('[data-effort="high"]').className.includes('active'), 'picked dot marked at once');
+  assert.ok(popup.textContent.includes('High'), 'current level named');
+  popup.querySelector('[data-effort="high"]').click();
+  assert.deepEqual(posted.at(-1), { type: 'setEffort', effort: 'default' });
+  send({ ...STATE, model: 'opus', effort: 'high' });
+  assert.equal($('profile').textContent, 'Claude (Max) · opus · high effort');
+  send({ ...STATE, effort: 'max' });
+  assert.equal($('profile').textContent, 'Claude (Max) · max effort');
+  assert.ok(popup.querySelector('[data-effort="max"]').className.includes('active'), 'current effort marked');
+});
+
+const SESSIONS = {
+  type: 'sessions',
+  current: 's1',
+  items: [
+    { id: 's1', title: 'hello', ago: '13m' },
+    { id: 's2', title: 'ccprofile extension feature enhancements', ago: '17m' },
+  ],
+};
+
+test('sessions open the top-right history popup: search filters, click resumes', () => {
+  const { window, posted, send, $ } = boot();
+  send(STATE);
+  send(SESSIONS);
+  const popup = $('history-popup');
+  assert.equal(popup.hidden, false, 'popup opens');
+  const rows = () => [...popup.querySelectorAll('.history-row')];
+  assert.equal(rows().length, 2);
+  assert.ok(rows()[0].className.includes('active'), 'current session marked');
+  assert.ok(rows()[0].textContent.includes('13m'), 'relative time shown');
+  const search = popup.querySelector('input');
+  search.value = 'CCP';
+  search.dispatchEvent(new window.Event('input'));
+  assert.deepEqual(rows().map(r => r.dataset.session), ['s2'], 'case-insensitive title filter');
+  rows()[0].click();
+  assert.deepEqual(posted.at(-1), { type: 'resumeSession', id: 's2' });
+  assert.equal(popup.hidden, true, 'closes after picking');
+});
+
+test('history: delete needs a second click; Escape closes; empty list says so', () => {
+  const { window, posted, send, $ } = boot();
+  send(STATE);
+  send(SESSIONS);
+  const popup = $('history-popup');
+  const del = popup.querySelector('[data-session="s2"] .history-delete');
+  del.click();
+  assert.equal(posted.some(m => m.type === 'deleteSession'), false, 'first click only arms');
+  del.click();
+  assert.deepEqual(posted.at(-1), { type: 'deleteSession', id: 's2' });
+  assert.equal(popup.hidden, false, 'deleting keeps the list open');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(popup.hidden, true, 'Escape closes');
+  send({ type: 'sessions', items: [] });
+  assert.ok(popup.textContent.includes('No saved sessions'), 'empty state');
+});
+
+test('clicking outside closes the profile menu, the mode menu, and the agents popup', async () => {
+  const { window, send, $ } = boot();
+  send(STATE);
+  const fire = () => $('log').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+
+  $('profile').click();
+  assert.equal($('profile-popup').hidden, false);
+  fire();
+  assert.equal($('profile-popup').hidden, true, 'profile menu closes on outside click');
+
+  $('mode').click();
+  assert.equal($('mode-popup').hidden, false);
+  fire();
+  assert.equal($('mode-popup').hidden, true, 'mode menu closes on outside click');
+
+  send({ type: 'op', op: 'push', item: { kind: 'task', taskId: 'a', taskType: 'local_agent', description: 'x', status: 'running' } });
+  $('agents').click();
+  assert.equal($('agents-popup').hidden, false);
+  fire();
+  assert.equal($('agents-popup').hidden, true, 'agents popup closes on outside click');
+});
+
+test('clicking the pill itself does not immediately reclose via the outside handler', () => {
+  const { send, $ } = boot();
+  send(STATE);
+  $('profile').click();
+  assert.equal($('profile-popup').hidden, false, 'opening click is not swallowed by outside-close');
 });

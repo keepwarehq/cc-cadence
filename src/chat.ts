@@ -2,15 +2,20 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Item, Transcript, TurnTranslator } from './transcript';
-import { PERMISSION_MODES, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles } from './profiles';
+import { DEFAULT_MODEL, PERMISSION_MODES, effortChoices, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles, modelChoices, resolveModel } from './profiles';
 import { TurnHandle, runTurn, InputBlock } from './runner';
 import { addProfile, keyName, manageProfiles } from './profileUi';
-import { SessionSummary, deleteSession, listSessions, readTranscript } from './sessions';
+import { deleteSession, listSessions, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
 import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, nextAttachmentId, stagedName } from './attachments';
+import { resultNotice } from './turnResult';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
+/** Picker model choice per profile id ('default' / an alias) */
+const MODEL_KEY = 'ccprofile.modelChoice';
+/** Picker effort choice, shared by every profile ('default' / a claude --effort level) */
+const EFFORT_KEY = 'ccprofile.effort';
 const MAX_SAVED_ITEMS = 300;
 
 interface Status { model?: string; auth?: string; last?: string; rate?: string }
@@ -36,11 +41,14 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   private running?: TurnHandle;
   private turn?: TurnTranslator;
   private stopping = false;
+  /** Per-turn flag: set when the user stops/interrupts, so the SIGINT'd result is not shown as a red error */
+  private turnStop?: { stopped: boolean };
   private settings?: SettingsFile;
   private pending: PendingAttachment[] = [];
   private starting = false;
   private interrupting?: Promise<void>;
   private generation = 0;
+  private historyPending = false;
   private mode: PermissionMode;
   private status: Status = {};
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -69,6 +77,29 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const profiles = this.profiles();
     const id = this.ctx.globalState.get<string>(ACTIVE_KEY);
     return profiles.find(p => p.id === id) ?? profiles[0];
+  }
+
+  /** The picker choice remembered for a profile; falls back to default when the profile no longer offers it */
+  selectedModel(p: Profile = this.activeProfile()): string {
+    const choice = this.ctx.globalState.get<Record<string, string>>(MODEL_KEY)?.[p.id];
+    return choice && modelChoices(p).includes(choice) ? choice : DEFAULT_MODEL;
+  }
+
+  selectedEffort(): string {
+    const effort = this.ctx.globalState.get<string>(EFFORT_KEY);
+    return effort && effortChoices().includes(effort) ? effort : DEFAULT_MODEL;
+  }
+
+  async setEffort(effort: string): Promise<void> {
+    if (!effortChoices().includes(effort) || effort === this.selectedEffort()) return;
+    await this.ctx.globalState.update(EFFORT_KEY, effort);
+    this.refresh();
+  }
+
+  private displayLabel(p: Profile = this.activeProfile()): string {
+    const choice = this.selectedModel(p);
+    const effort = this.selectedEffort();
+    return [p.label, choice === DEFAULT_MODEL ? '' : choice, effort === DEFAULT_MODEL ? '' : `${effort} effort`].filter(Boolean).join(' · ');
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -107,10 +138,12 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       const resumed = !!this.sessionId;
       const { images, filePaths, names } = await this.materializePending(folder);
       if (gen !== this.generation) return;
-      this.transcript.push({ kind: 'user', text, profile: profile.label, attachments: names.length ? names : undefined });
+      this.transcript.push({ kind: 'user', text, profile: this.displayLabel(profile), attachments: names.length ? names : undefined });
       this.pending = [];
       void this.sendState();
 
+      const turnStop = { stopped: false };
+      this.turnStop = turnStop;
       const turn = new TurnTranslator(this.transcript, {
         init: e => {
           this.status.model = e.model;
@@ -126,7 +159,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         },
         rateLimit: info => { this.status.rate = rateText(info); this.pushStatus(); },
         result: e => {
-          if (e.is_error || e.subtype !== 'success') this.notice('error', resultError(e));
+          const n = resultNotice(e, turnStop.stopped);
+          if (n) this.notice(n.level, n.text);
           const denied = [...new Set((e.permission_denials ?? []).map((d: any) => d?.tool_name).filter(Boolean))];
           if (denied.length) this.notice('warn', `Denied tool calls: ${denied.join(', ')} (permission mode ${mode})`);
           this.status.last = `${((e.duration_ms ?? 0) / 1000).toFixed(1)}s · ${e.num_turns ?? '?'} turns`;
@@ -145,7 +179,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         message: { text, blocks },
         permissionMode: mode,
         sessionId: this.sessionId,
-        model: profile.model,
+        model: resolveModel(profile, this.selectedModel(profile)),
+        effort: this.selectedEffort() === DEFAULT_MODEL ? undefined : this.selectedEffort(),
         settingsPath: this.settings?.path,
         onEvent: e => turn.handle(e),
       });
@@ -172,7 +207,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     if (exit.spawnError) {
       this.notice('error', `Failed to start claude (${claudePath}): ${exit.spawnError.message}\nChange the path in the ccprofile.claudePath setting.`);
     } else if (this.stopping) {
-      this.notice('info', 'Stopped.');
+      this.notice('info', 'Stopped by user.');
     } else if (!turn.gotResult) {
       const tail = exit.stderr.trim().slice(-1500);
       const hint = resumed ? '\nIf resuming the session failed, press "New chat" to start over.' : '';
@@ -190,11 +225,13 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const prev = this.turn;
     this.running = undefined;
     this.stopping = false;
+    if (this.turnStop) this.turnStop.stopped = true; // suppress the SIGINT'd result's red error
     handle.stop();
     await handle.done;
     void this.settings?.dispose();
     this.settings = undefined;
     prev?.finish('Interrupted');
+    this.notice('info', 'Stopped by user.');
     if (prev && prev.pendingTasks > 0) {
       this.notice('info', 'Interrupted while background tasks were still running. Check now to collect their results.', 'checkTasks');
     }
@@ -233,13 +270,6 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       names.push({ name: a.name, mediaType: a.mediaType ?? 'application/octet-stream' });
     }
     return { images, filePaths, names };
-  }
-
-  private async attachDialog(): Promise<void> {
-    const uris = await vscode.window.showOpenDialog({ canSelectMany: true });
-    if (!uris?.length) return;
-    for (const uri of uris) await this.addUriAttachment(uri);
-    this.sendState();
   }
 
   private async addUriAttachment(uri: vscode.Uri): Promise<void> {
@@ -314,6 +344,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   stop(): void {
     if (!this.running) return;
     this.stopping = true;
+    if (this.turnStop) this.turnStop.stopped = true;
     this.running.stop();
   }
 
@@ -329,10 +360,18 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     void this.save();
   }
 
-  async setProfile(id: string): Promise<void> {
+  /** Switch profile and/or its model choice; choice undefined keeps the one remembered for that profile */
+  async setProfile(id: string, choice?: string): Promise<void> {
     const prev = this.activeProfile();
-    if (id === prev.id || !this.profiles().some(p => p.id === id)) return;
-    await this.ctx.globalState.update(ACTIVE_KEY, id);
+    const prevLabel = this.displayLabel(prev);
+    const target = this.profiles().find(p => p.id === id);
+    if (!target) return;
+    if (choice !== undefined && modelChoices(target).includes(choice)) {
+      const saved = this.ctx.globalState.get<Record<string, string>>(MODEL_KEY) ?? {};
+      await this.ctx.globalState.update(MODEL_KEY, { ...saved, [id]: choice });
+    }
+    if (id === prev.id && this.displayLabel(target) === prevLabel) return;
+    if (id !== prev.id) await this.ctx.globalState.update(ACTIVE_KEY, id);
     const next = this.activeProfile();
     // Resuming within the same vendor is fine; across vendors the thinking block signature mismatches and 400s — only a new session works
     const compatible = isThirdParty(prev) === isThirdParty(next)
@@ -340,20 +379,26 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.sessionId = compatible ? this.sessionId : undefined;
     if (this.transcript.items.length) {
       this.notice('info', compatible
-        ? `Switched to "${next.label}"; the next message continues the current session.`
-        : `Switched to "${next.label}"; sessions are not compatible across vendors, so the next message starts a new session.`);
+        ? `Switched to "${this.displayLabel(next)}"; the next message continues the current session.`
+        : `Switched to "${this.displayLabel(next)}"; sessions are not compatible across vendors, so the next message starts a new session.`);
     }
     this.refresh();
   }
 
+  async setModel(choice: string): Promise<void> {
+    await this.setProfile(this.activeProfile().id, choice);
+  }
+
   async pickProfile(): Promise<void> {
     const current = this.activeProfile().id;
-    type Pick = vscode.QuickPickItem & { id?: string };
-    const picks: Pick[] = this.profiles().map(p => ({
-      label: `${p.id === current ? '$(check) ' : ''}${p.label}`,
-      description: isThirdParty(p) ? p.baseUrl : 'local claude -p · Max subscription',
+    const currentChoice = this.selectedModel();
+    type Pick = vscode.QuickPickItem & { id?: string; choice?: string };
+    const picks: Pick[] = this.profiles().flatMap(p => modelChoices(p).map(c => ({
+      label: `${p.id === current && c === currentChoice ? '$(check) ' : ''}${c === DEFAULT_MODEL ? p.label : `${p.label} · ${choiceLabel(c)}`}`,
+      description: c === DEFAULT_MODEL ? profileDescription(p) : choiceDetail(p, c),
       id: p.id,
-    }));
+      choice: c,
+    })));
     picks.push(
       { label: '', kind: vscode.QuickPickItemKind.Separator },
       { label: '$(add) Add model…', id: '__add__' },
@@ -362,7 +407,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const pick = await vscode.window.showQuickPick(picks, { title: 'Switch model' });
     if (pick?.id === '__add__') await this.addProfile();
     else if (pick?.id === '__manage__') await this.manageProfiles();
-    else if (pick?.id) await this.setProfile(pick.id);
+    else if (pick?.id) await this.setProfile(pick.id, pick.choice);
   }
 
   async addProfile(): Promise<void> {
@@ -377,38 +422,35 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.refresh();
   }
 
+  /** Title-bar history button: send the session list; the panel shows it as a dropdown at the top right */
   async history(): Promise<void> {
+    if (!this.view) {
+      // the panel has never been opened in this window: open it and answer once its webview reports ready
+      this.historyPending = true;
+      await vscode.commands.executeCommand('ccprofile.chat.focus');
+      return;
+    }
+    this.view.show?.(true);
+    await this.postSessions();
+  }
+
+  private async postSessions(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
     const sessions = await listSessions(folder.uri.fsPath);
-    if (!sessions.length) return this.notice('info', 'No saved sessions for this folder yet.');
-    type Pick = vscode.QuickPickItem & { id?: string };
-    const picks: Pick[] = sessions.map(s => ({
-      label: s.title,
-      description: relativeTime(s.mtimeMs),
-      detail: `${Math.max(1, Math.round(s.sizeBytes / 1024))} KB`,
-      id: s.sessionId,
-    }));
-    picks.push(
-      { label: '', kind: vscode.QuickPickItemKind.Separator },
-      { label: '$(trash) Delete…', id: '__delete__' },
-    );
-    const pick = await vscode.window.showQuickPick(picks, { title: 'History' });
-    if (!pick) return;
-    if (pick.id === '__delete__') return this.pickDelete(folder.uri.fsPath, sessions);
-    if (pick.id) await this.resumeSession(pick.id);
+    this.post({
+      type: 'sessions',
+      current: this.sessionId,
+      items: sessions.map(s => ({ id: s.sessionId, title: s.title, ago: relativeTime(s.mtimeMs) })),
+    });
   }
 
-  private async pickDelete(cwd: string, sessions: SessionSummary[]): Promise<void> {
-    type Pick = vscode.QuickPickItem & { id: string };
-    const picks: Pick[] = sessions.map(s => ({ label: s.title, description: relativeTime(s.mtimeMs), id: s.sessionId }));
-    const doomed = await vscode.window.showQuickPick(picks, { title: 'Delete sessions', canPickMany: true });
-    if (!doomed?.length) return;
-    for (const d of doomed) {
-      await deleteSession(d.id, cwd);
-      if (d.id === this.sessionId) this.sessionId = undefined;
-    }
-    this.notice('info', `Deleted ${doomed.length} session${doomed.length === 1 ? '' : 's'}.`);
+  private async deleteSessionById(id: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') return;
+    await deleteSession(id, folder.uri.fsPath);
+    if (id === this.sessionId) this.sessionId = undefined;
+    await this.postSessions();
   }
 
   async resumeSession(id: string): Promise<void> {
@@ -434,11 +476,16 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 
   private onMessage(m: any): void {
     switch (m?.type) {
-      case 'ready': this.sendState(); break;
+      case 'ready':
+        this.sendState();
+        if (this.historyPending) { this.historyPending = false; void this.postSessions(); }
+        break;
       case 'send': if (typeof m.text === 'string') void this.send(m.text); break;
       case 'stop': this.stop(); break;
       case 'newChat': this.newChat(); break;
       case 'setProfile': if (typeof m.id === 'string') void this.setProfile(m.id); break;
+      case 'setModel': if (typeof m.model === 'string') void this.setModel(m.model); break;
+      case 'setEffort': if (typeof m.effort === 'string') void this.setEffort(m.effort); break;
       case 'setMode':
         if (PERMISSION_MODES.includes(m.mode)) { this.mode = m.mode; this.refresh(); }
         break;
@@ -446,8 +493,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       case 'manageProfiles': void this.manageProfiles(); break;
       case 'history': void this.history(); break;
       case 'resumeSession': if (typeof m.id === 'string') void this.resumeSession(m.id); break;
-      case 'deleteSession': if (typeof m.id === 'string') void this.history(); break;
-      case 'attach': void this.attachDialog(); break;
+      case 'deleteSession': if (typeof m.id === 'string') void this.deleteSessionById(m.id); break;
       case 'attachData':
         if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, typeof m.mediaType === 'string' ? m.mediaType : undefined, m.base64, m.cid);
         break;
@@ -470,16 +516,21 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   private refresh(): void {
     const p = this.activeProfile();
     const bypass = this.mode === 'bypassPermissions';
-    this.statusBar.text = `${this.running ? '$(sync~spin)' : '$(arrow-swap)'} ${p.label}${bypass ? ' $(unlock)' : ''}`;
-    this.statusBar.tooltip = `ccprofile · ${p.label} (${isThirdParty(p) ? p.baseUrl : 'local claude -p, Max subscription'})\nPermission mode: ${this.mode}\nClick to switch model`;
+    this.statusBar.text = `${this.running ? '$(sync~spin)' : '$(arrow-swap)'} ${this.displayLabel(p)}${bypass ? ' $(unlock)' : ''}`;
+    this.statusBar.tooltip = `ccprofile · ${this.displayLabel(p)} (${profileDescription(p)})\nPermission mode: ${this.mode}\nClick to switch model`;
     this.sendState();
   }
 
   private sendState(): void {
+    const active = this.activeProfile();
     this.post({
       type: 'state',
-      profiles: this.profiles().map(p => ({ id: p.id, label: p.label })),
-      activeId: this.activeProfile().id,
+      profiles: this.profiles().map(p => ({ id: p.id, label: p.label, description: profileDescription(p) })),
+      activeId: active.id,
+      model: this.selectedModel(active),
+      modelChoices: modelChoices(active).map(c => ({ id: c, label: choiceLabel(c), detail: choiceDetail(active, c) })),
+      effort: this.selectedEffort(),
+      effortChoices: effortChoices().map(e => ({ id: e, label: e === 'xhigh' ? 'XHigh' : choiceLabel(e), detail: e === DEFAULT_MODEL ? 'ccprofile.claudeSettings effortLevel, else the CLI default' : `--effort ${e}` })),
       mode: this.mode,
       modes: PERMISSION_MODES,
       busy: !!this.running,
@@ -527,18 +578,21 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 <link rel="stylesheet" href="${uri('chat.css')}">
 </head>
 <body>
+<div id="history-popup" hidden></div>
 <main id="log"></main>
 <footer>
   <div id="mention-popup" hidden></div>
   <div id="agents-popup" hidden></div>
+  <div id="mode-popup" hidden></div>
+  <div id="profile-popup" hidden></div>
   <div id="status"></div>
   <div id="chips"></div>
   <div class="composer" id="composer">
     <textarea id="input" rows="3" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
+    <input type="file" id="file-input" multiple hidden>
     <div class="toolbar">
       <button id="attach" class="ghost" title="Upload from computer">＋</button>
       <button id="mention" class="ghost" title="Mention a file (@)">@</button>
-      <button id="history" class="ghost" title="History">🕘</button>
       <button id="agents" class="ghost" title="Background agents" hidden></button>
       <button id="profile" class="pill" title="Switch model"></button>
       <button id="mode" class="pill" title="Permission mode"></button>
@@ -554,6 +608,21 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 </body>
 </html>`;
   }
+}
+
+function profileDescription(p: Profile): string {
+  return isThirdParty(p) ? p.baseUrl ?? '' : 'local claude -p · Max subscription';
+}
+
+function choiceLabel(choice: string): string {
+  return choice === DEFAULT_MODEL ? 'Default' : choice.charAt(0).toUpperCase() + choice.slice(1);
+}
+
+/** What a picker choice actually runs: the --model value, or where the default comes from */
+function choiceDetail(p: Profile, choice: string): string {
+  const model = resolveModel(p, choice);
+  if (isThirdParty(p)) return model ?? 'endpoint default';
+  return model ? `--model ${model}` : 'claude CLI default';
 }
 
 function mediaTypeOf(name: string): string {
@@ -588,6 +657,3 @@ function rateText(info: any): string {
   return `quota ${info.status}${reset}`;
 }
 
-function resultError(e: any): string {
-  return String(e.result || (Array.isArray(e.errors) && e.errors.join('\n')) || e.subtype || 'Something went wrong');
-}

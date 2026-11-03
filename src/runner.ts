@@ -15,6 +15,8 @@ export interface TurnOptions {
   permissionMode: PermissionMode;
   sessionId?: string;
   model?: string;
+  /** claude --effort level; omitted keeps --settings effortLevel or the CLI default */
+  effort?: string;
   settingsPath?: string;
   onEvent: (e: unknown) => void;
 }
@@ -39,6 +41,7 @@ export function runTurn(o: TurnOptions): TurnHandle {
   if (o.settingsPath) args.push('--settings', o.settingsPath);
   if (o.sessionId) args.push('--resume', o.sessionId);
   if (o.model) args.push('--model', o.model);
+  if (o.effort) args.push('--effort', o.effort);
 
   const child = spawn(o.claudePath, args, { cwd: o.cwd, env: o.env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';

@@ -14,6 +14,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('ccprofile.manageProfiles', () => chat.manageProfiles()),
     vscode.commands.registerCommand('ccprofile.doctor', () => runDoctor(ctx.secrets)),
     vscode.commands.registerCommand('ccprofile.history', () => chat.history()),
+    vscode.commands.registerCommand('ccprofile.open', () => vscode.commands.executeCommand('ccprofile.chat.focus')),
   );
 }
 
