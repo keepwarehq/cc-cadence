@@ -462,12 +462,6 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         if (typeof m.uri === 'string') void this.addUriAttachment(vscode.Uri.parse(m.uri)).then(() => this.sendState());
         break;
       case 'pickProfile': void this.pickProfile(); break;
-      case 'cycleMode': {
-        const at = PERMISSION_MODES.indexOf(this.mode);
-        this.mode = PERMISSION_MODES[(at + 1) % PERMISSION_MODES.length];
-        this.refresh();
-        break;
-      }
       case 'mentionQuery': if (typeof m.queryId === 'string' && typeof m.text === 'string') void this.mention(m.queryId, m.text); break;
       case 'checkTasks': void this.send('Check your background tasks and continue.'); break;
     }
@@ -542,7 +536,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   <div class="composer" id="composer">
     <textarea id="input" rows="3" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
     <div class="toolbar">
-      <button id="attach" class="ghost" title="Attach files">＋</button>
+      <button id="attach" class="ghost" title="Upload from computer">＋</button>
       <button id="mention" class="ghost" title="Mention a file (@)">@</button>
       <button id="history" class="ghost" title="History">🕘</button>
       <button id="agents" class="ghost" title="Background agents" hidden></button>

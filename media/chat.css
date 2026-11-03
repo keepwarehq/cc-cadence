@@ -27,6 +27,14 @@ body {
   margin-right: auto;
 }
 
+#log > *.user {
+  margin-right: 0;
+}
+
+#log > *.user {
+  margin-left: auto;
+}
+
 #log:empty::before {
   content: 'Pick a model and start chatting.';
   display: block;
@@ -335,6 +343,41 @@ footer > * {
 
 .mention-item .mention-icon { color: var(--vscode-descriptionForeground); }
 
+#mode-popup {
+  margin-bottom: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.3)));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+.mode-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.mode-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.mode-row.active {
+  border-left-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-activeSelectionBackground, transparent);
+}
+
+.mode-row .mode-label { font-weight: 600; }
+
+.mode-row .mode-desc {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
 .mention-empty {
   padding: 4px 10px;
   color: var(--vscode-descriptionForeground);
@@ -463,11 +506,6 @@ button.pill {
 
 button.pill:hover {
   background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.3));
-}
-
-button.pill.bypass::after {
-  content: ' · bypass';
-  color: var(--vscode-inputValidation-warningBorder);
 }
 
 button#agents {

@@ -14,12 +14,13 @@ const BODY = `
 <footer>
   <div id="mention-popup" hidden></div>
   <div id="agents-popup" hidden></div>
+  <div id="mode-popup" hidden></div>
   <div id="status"></div>
   <div id="chips"></div>
   <div class="composer" id="composer">
     <textarea id="input"></textarea>
     <div class="toolbar">
-      <button id="attach">＋</button><button id="mention">@</button><button id="history">🕘</button>
+      <button id="attach" title="Upload from computer">＋</button><button id="mention">@</button><button id="history">🕘</button>
       <button id="profile"></button><button id="mode"></button><span class="spacer"></span>
       <button id="agents" hidden>⚡</button><button id="stop" hidden>⏹</button><button id="send">Send</button>
     </div>
@@ -55,19 +56,32 @@ test('posts ready on boot; state fills the composer pills', () => {
   assert.deepEqual(posted[0], { type: 'ready' });
   send(STATE);
   assert.equal($('profile').textContent, 'Claude (Max)');
-  assert.equal($('mode').textContent, 'bypass');
+  assert.equal($('mode').textContent, 'Bypass');
   assert.equal($('mode').className.includes('bypass'), true);
   send({ ...STATE, mode: 'plan' });
-  assert.equal($('mode').textContent, 'plan');
+  assert.equal($('mode').textContent, 'Plan');
 });
 
-test('picking a profile posts pickProfile; the mode pill cycles the mode', () => {
+test('picking a profile posts pickProfile; the mode pill opens a mode menu', () => {
   const { window, posted, send, $ } = boot();
   send(STATE);
   $('profile').click();
   assert.deepEqual(posted.at(-1), { type: 'pickProfile' });
   $('mode').click();
-  assert.deepEqual(posted.at(-1), { type: 'cycleMode' });
+  const popup = $('mode-popup');
+  assert.equal(popup.hidden, false, 'mode menu opens');
+  assert.ok(popup.textContent.includes('Bypass permissions'));
+  assert.ok(popup.textContent.includes('Plan'));
+  assert.ok(popup.textContent.includes('present a plan'), 'descriptions shown');
+  const active = popup.querySelector('.mode-row.active');
+  assert.ok(active && active.textContent.includes('Bypass permissions'), 'active mode checked');
+  [...popup.querySelectorAll('.mode-row')].find(r => r.textContent.includes('Plan')).click();
+  assert.deepEqual(posted.at(-1), { type: 'setMode', mode: 'plan' });
+  assert.equal(popup.hidden, true, 'menu closes after picking');
+  $('mode').click();
+  assert.equal(popup.hidden, false, 'pill toggles the menu');
+  $('mode').click();
+  assert.equal(popup.hidden, true);
 });
 
 test('replays a real event stream: four items render in order', async () => {
@@ -282,4 +296,13 @@ test('agents pill hides when there are no task items', async () => {
   send(STATE);
   await frame();
   assert.equal($('agents').hidden, true);
+});
+
+
+test('attach button asks the host to open the file dialog', () => {
+  const { posted, send, $ } = boot();
+  send(STATE);
+  $('attach').click();
+  assert.deepEqual(posted.at(-1), { type: 'attach' });
+  assert.equal($('attach').title, 'Upload from computer');
 });

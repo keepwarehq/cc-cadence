@@ -13,6 +13,7 @@
   const modePill = $('mode');
   const agentsBtn = $('agents');
   const agentsPopup = $('agents-popup');
+  const modePopup = $('mode-popup');
   const statusEl = $('status');
 
   /** @type {any[]} */
@@ -25,6 +26,7 @@
   const profileLabels = {};
   /** @type {string[]} */
   let modes = [];
+  let currentMode = '';
   const dirty = new Set();
   let frame = 0;
 
@@ -230,6 +232,38 @@
     return n + ' tokens';
   }
 
+  function modeLabel(mode) {
+    return mode === 'bypassPermissions' ? 'Bypass' : mode.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+  }
+
+  const MODE_INFO = [
+    ['bypassPermissions', 'Bypass permissions', 'Never ask before running commands or editing files'],
+    ['acceptEdits', 'Edit automatically', 'Approve file edits in the active folder automatically'],
+    ['plan', 'Plan', 'Explore the code and present a plan before editing'],
+    ['default', 'Manual', 'Ask before every tool call'],
+    ['dontAsk', 'Don\'t ask', 'Never ask; denied tools are skipped silently'],
+    ['auto', 'Auto', 'Approve actions that pass a safety check and pause for anything risky'],
+  ];
+
+  function renderModePopup() {
+    modePopup.replaceChildren(...MODE_INFO
+      .filter(([id]) => modes.includes(id))
+      .map(([id, label, desc]) => {
+        const row = el('div', 'mode-row' + (id === currentMode ? ' active' : ''));
+        row.append(el('span', 'mode-label', label), el('span', 'mode-desc', desc));
+        row.addEventListener('click', () => {
+          vscode.postMessage({ type: 'setMode', mode: id });
+          closeModeMenu();
+        });
+        return row;
+      }));
+    modePopup.hidden = false;
+  }
+
+  function closeModeMenu() { modePopup.hidden = true; }
+
+  modePill.addEventListener('click', () => (modePopup.hidden ? renderModePopup() : closeModeMenu()));
+
   function updateAgents() {
     const running = items.filter(x => x?.kind === 'task' && x.status === 'running');
     agentsBtn.hidden = items.every(x => x?.kind !== 'task');
@@ -287,7 +321,8 @@
     for (const p of m.profiles) profileLabels[p.id] = p.label;
     modes = m.modes;
     profilePill.textContent = profileLabels[activeId] || activeId;
-    modePill.textContent = m.mode.replace(/Permissions$/, '');
+    currentMode = m.mode;
+    modePill.textContent = modeLabel(m.mode);
     modePill.classList.toggle('bypass', m.mode === 'bypassPermissions');
     attachments = m.attachments || [];
     renderChips();
@@ -317,8 +352,6 @@
   $('mention').addEventListener('click', () => { insertMention('@'); input.focus(); });
   $('history').addEventListener('click', () => vscode.postMessage({ type: 'history' }));
   profilePill.addEventListener('click', () => vscode.postMessage({ type: 'pickProfile' }));
-  modePill.addEventListener('click', () => vscode.postMessage({ type: 'cycleMode' }));
-
   // ---- Attachment input: paste and drop ----
 
   let attachSeq = 0;
