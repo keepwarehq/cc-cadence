@@ -108,10 +108,11 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       claudePath,
       cwd: folder.uri.fsPath,
       env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
-      prompt: text,
+      message: { text, blocks: [] },
       permissionMode: mode,
       sessionId: this.sessionId,
       model: profile.model,
+      settingsPath: this.settings?.path,
       onEvent: e => turn.handle(e),
     });
     this.setBusy(true);

@@ -2,15 +2,21 @@ import { spawn } from 'node:child_process';
 import * as readline from 'node:readline';
 import type { PermissionMode } from './profiles';
 
+export type InputBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
 export interface TurnOptions {
   claudePath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  prompt: string;
+  /** The user message: a plain text plus optional content blocks (images first, text last) */
+  message: { text: string; blocks: InputBlock[] };
   permissionMode: PermissionMode;
   sessionId?: string;
   model?: string;
-  onEvent: (e: any) => void;
+  settingsPath?: string;
+  onEvent: (e: unknown) => void;
 }
 
 export interface TurnExit {
@@ -25,10 +31,12 @@ export interface TurnHandle {
   done: Promise<TurnExit>;
 }
 
-/** Run one `claude -p` round: the message goes to stdin, events are read line-by-line from stdout as stream-json; rounds chain via --resume */
+/** Run one `claude -p` round: the message goes to stdin as one stream-json user line, events are read line-by-line from stdout; rounds chain via --resume */
 export function runTurn(o: TurnOptions): TurnHandle {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
+                '--input-format', 'stream-json',
                 '--permission-mode', o.permissionMode];
+  if (o.settingsPath) args.push('--settings', o.settingsPath);
   if (o.sessionId) args.push('--resume', o.sessionId);
   if (o.model) args.push('--model', o.model);
 
@@ -44,7 +52,9 @@ export function runTurn(o: TurnOptions): TurnHandle {
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (s: string) => { stderr = (stderr + s).slice(-8000); });
   child.stdin.on('error', () => {}); // writing stdin after an early exit raises EPIPE
-  child.stdin.end(o.prompt);
+  const { blocks, text } = o.message;
+  const content = blocks.length > 0 ? blocks : text;
+  child.stdin.end(JSON.stringify({ type: 'user', message: { role: 'user', content } }));
 
   readline.createInterface({ input: child.stdout }).on('line', line => {
     if (!line.trim()) return;

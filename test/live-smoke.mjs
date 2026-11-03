@@ -18,7 +18,7 @@ async function turn(prompt, sessionId) {
   const info = {};
   const tr = new TurnTranslator(t, { init: e => Object.assign(info, e), result: e => { info.result = e; } });
   const h = runTurn({
-    claudePath, cwd, prompt, sessionId, model: 'haiku', permissionMode: 'bypassPermissions',
+    claudePath, cwd, message: { text: prompt, blocks: [] }, sessionId, model: 'haiku', permissionMode: 'bypassPermissions',
     env: buildEnv(process.env, CLAUDE), onEvent: e => tr.handle(e),
   });
   const exit = await h.done;
