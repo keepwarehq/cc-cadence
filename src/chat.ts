@@ -1,17 +1,32 @@
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Item, Transcript, TurnTranslator } from './transcript';
 import { PERMISSION_MODES, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles } from './profiles';
-import { TurnHandle, runTurn } from './runner';
+import { TurnHandle, runTurn, InputBlock } from './runner';
 import { addProfile, keyName, manageProfiles } from './profileUi';
 import { SessionSummary, deleteSession, listSessions, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
+import { MAX_IMAGE_BYTES, buildBlocks, nextAttachmentId, validateImage } from './attachments';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
 const MAX_SAVED_ITEMS = 300;
 
 interface Status { model?: string; auth?: string; last?: string; rate?: string }
+
+/** An attachment waiting to be sent: images keep base64 in memory, files keep a source URI or blob bytes */
+interface PendingAttachment {
+  id: string;
+  name: string;
+  kind: 'image' | 'file';
+  mediaType?: string;
+  base64?: string;
+  byteLength?: number;
+  uri?: vscode.Uri;
+}
+
+interface MentionItem { label: string; path: string; kind: 'file' | 'folder' }
 
 export class ChatController implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
@@ -21,6 +36,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   private turn?: TurnTranslator;
   private stopping = false;
   private settings?: SettingsFile;
+  private pending: PendingAttachment[] = [];
   private mode: PermissionMode;
   private status: Status = {};
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -62,9 +78,11 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 
   async send(raw: string): Promise<void> {
     const text = raw.trim();
-    if (!text || this.running) return;
+    if (!text) return;
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
+
+    if (this.running) await this.interruptRunning();
 
     const profile = this.activeProfile();
     let key: string | undefined;
@@ -76,7 +94,10 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const cfg = vscode.workspace.getConfiguration('ccprofile');
     const mode = this.mode;
     const resumed = !!this.sessionId;
-    this.transcript.push({ kind: 'user', text, profile: profile.label });
+    const { images, filePaths, names } = await this.materializePending(folder);
+    this.transcript.push({ kind: 'user', text, profile: profile.label, attachments: names.length ? names : undefined });
+    this.pending = [];
+    void this.sendState();
 
     const turn = new TurnTranslator(this.transcript, {
       init: e => {
@@ -101,6 +122,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       },
     });
 
+    const blocks = buildBlocks(text, images, filePaths);
     this.stopping = false;
     this.turn = turn;
     this.settings = await writeSettingsFile(cfg.get<Record<string, unknown>>('claudeSettings'));
@@ -108,7 +130,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       claudePath,
       cwd: folder.uri.fsPath,
       env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
-      message: { text, blocks: [] },
+      message: { text, blocks },
       permissionMode: mode,
       sessionId: this.sessionId,
       model: profile.model,
@@ -135,7 +157,114 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       const hint = resumed ? '\nIf resuming the session failed, press "New chat" to start over.' : '';
       this.notice('error', `claude exited abnormally (${exit.signal ?? `code ${exit.code}`})${tail ? '\n' + tail : ''}${hint}`);
     }
+    if (turn.pendingTasks > 0) {
+      this.notice('info', 'Background tasks were still running when claude exited. Check now to collect their results.', 'checkTasks');
+    }
     void this.save();
+  }
+
+  /** Interrupt-and-replace: stop the running process, finalize its turn as Interrupted, keep the session id */
+  private async interruptRunning(): Promise<void> {
+    const handle = this.running!;
+    const prev = this.turn;
+    this.running = undefined;
+    this.stopping = false;
+    handle.stop();
+    await handle.done;
+    prev?.finish('Interrupted');
+    this.turn = undefined;
+    if (prev && prev.pendingTasks > 0) {
+      this.notice('info', 'Interrupted while background tasks were still running. Check now to collect their results.', 'checkTasks');
+    }
+  }
+
+  /** Split pending attachments into image blocks and materialized file paths; clears nothing (send clears) */
+  private async materializePending(folder: vscode.WorkspaceFolder): Promise<{
+    images: { mediaType: string; base64: string }[];
+    filePaths: string[];
+    names: { name: string; mediaType: string }[];
+  }> {
+    const images: { mediaType: string; base64: string }[] = [];
+    const filePaths: string[] = [];
+    const names: { name: string; mediaType: string }[] = [];
+    for (const a of this.pending) {
+      if (a.kind === 'image' && a.base64) {
+        images.push({ mediaType: a.mediaType ?? 'image/png', base64: a.base64 });
+        names.push({ name: a.name, mediaType: a.mediaType ?? 'image/png' });
+        continue;
+      }
+      const destName = `${Date.now()}-${a.name.replace(/[^\w.-]+/g, '_')}`;
+      const dest = vscode.Uri.joinPath(folder.uri, '.ccprofile', 'attachments', destName);
+      try {
+        if (a.uri) await vscode.workspace.fs.copy(a.uri, dest, { overwrite: true });
+        else if (a.base64) await vscode.workspace.fs.writeFile(dest, Buffer.from(a.base64, 'base64'));
+        else continue;
+      } catch (err) {
+        this.notice('error', `Could not stage attachment "${a.name}": ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      filePaths.push(path.relative(folder.uri.fsPath, dest.fsPath));
+      names.push({ name: a.name, mediaType: a.mediaType ?? 'application/octet-stream' });
+    }
+    return { images, filePaths, names };
+  }
+
+  private async attachDialog(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({ canSelectMany: true });
+    if (!uris?.length) return;
+    for (const uri of uris) await this.addUriAttachment(uri);
+    this.sendState();
+  }
+
+  private async addUriAttachment(uri: vscode.Uri): Promise<void> {
+    try {
+      const st = await vscode.workspace.fs.stat(uri);
+      const name = uri.path.split('/').pop() || 'file';
+      if (isImageName(name)) {
+        if (st.size > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const base64 = Buffer.from(bytes).toString('base64');
+        this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaTypeOf(name), base64, byteLength: st.size });
+      } else {
+        this.pending.push({ id: nextAttachmentId(), name, kind: 'file', uri, byteLength: st.size });
+      }
+    } catch (err) {
+      this.notice('error', `Could not attach ${uri.fsPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** An image pasted or dropped as raw bytes arrives as base64; a non-image OS drop carries the blob bytes */
+  private addDataAttachment(name: string, mediaType: string | undefined, base64: string): void {
+    const byteLength = Math.floor(base64.length * 3 / 4);
+    const image = mediaType ? validateImage(byteLength, mediaType) : isImageName(name);
+    if (image) {
+      if (byteLength > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
+      this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaType ?? mediaTypeOf(name), base64 });
+    } else {
+      this.pending.push({ id: nextAttachmentId(), name, kind: 'file', base64, byteLength });
+    }
+    this.sendState();
+  }
+
+  private async mention(queryId: string, raw: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return;
+    const q = raw.trim().toLowerCase();
+    const items: MentionItem[] = [];
+    try {
+      const entries = await vscode.workspace.fs.readDirectory(folder.uri);
+      for (const [name, type] of entries) {
+        if (type === vscode.FileType.Directory && fuzzy(name, q)) items.push({ label: name + '/', path: name + '/', kind: 'folder' });
+      }
+    } catch { /* ignore unreadable folders */ }
+    const files = await vscode.workspace.findFiles(q ? `**/*${q.replace(/[/\\]/g, '')}*` : '**/*', '**/.ccprofile/**', 20);
+    for (const f of files) {
+      const rel = path.relative(folder.uri.fsPath, f.fsPath);
+      if (!rel || rel.startsWith('..') || !fuzzy(rel, q)) continue;
+      items.push({ label: rel, path: rel, kind: 'file' });
+      if (items.length >= 20) break;
+    }
+    this.post({ type: 'mentionResults', queryId, items: items.slice(0, 20) });
   }
 
   stop(): void {
@@ -273,6 +402,19 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       case 'history': void this.history(); break;
       case 'resumeSession': if (typeof m.id === 'string') void this.resumeSession(m.id); break;
       case 'deleteSession': if (typeof m.id === 'string') void this.history(); break;
+      case 'attach': void this.attachDialog(); break;
+      case 'attachData':
+        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, typeof m.mediaType === 'string' ? m.mediaType : undefined, m.base64);
+        break;
+      case 'attachFile':
+        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, undefined, m.base64);
+        break;
+      case 'removeAttachment':
+        this.pending = this.pending.filter(a => a.id !== m.id);
+        this.sendState();
+        break;
+      case 'mentionQuery': if (typeof m.queryId === 'string' && typeof m.text === 'string') void this.mention(m.queryId, m.text); break;
+      case 'checkTasks': void this.send('Check your background tasks and continue.'); break;
     }
   }
 
@@ -293,6 +435,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       modes: PERMISSION_MODES,
       busy: !!this.running,
       items: this.transcript.items,
+      attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType })),
       status: this.statusText(),
     });
   }
@@ -311,8 +454,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.post({ type: 'status', text: this.statusText() });
   }
 
-  private notice(level: 'info' | 'warn' | 'error', text: string): void {
-    this.transcript.push({ kind: 'notice', level, text });
+  private notice(level: 'info' | 'warn' | 'error', text: string, action?: 'checkTasks'): void {
+    this.transcript.push({ kind: 'notice', level, text, action });
   }
 
   private post(msg: unknown): void {
@@ -355,6 +498,22 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 </body>
 </html>`;
   }
+}
+
+function isImageName(name: string): boolean {
+  return /\.(png|jpe?g|webp|gif)$/i.test(name);
+}
+
+function mediaTypeOf(name: string): string {
+  const ext = name.toLowerCase();
+  if (ext.endsWith('.png')) return 'image/png';
+  if (ext.endsWith('.jpg') || ext.endsWith('.jpeg')) return 'image/jpeg';
+  if (ext.endsWith('.webp')) return 'image/webp';
+  return 'image/gif';
+}
+
+function fuzzy(hay: string, needle: string): boolean {
+  return !needle || hay.toLowerCase().includes(needle);
 }
 
 function relativeTime(mtimeMs: number): string {
