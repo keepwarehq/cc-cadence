@@ -38,6 +38,16 @@
     return e;
   }
 
+  function toolFamily(/** @type {string} */ name) {
+    const n = (name || '').toLowerCase();
+    if (/^(bash|powerShell)$/.test(n) || n.startsWith('shell')) return 'bash';
+    if (/^(read|write|edit|notebookedit|applypatch)/.test(n)) return 'file';
+    if (/^(glob|grep|ls)/.test(n)) return 'search';
+    if (/^(web|fetch|search)/.test(n)) return 'web';
+    if (/^(agent|task|todo|skill|exit)/.test(n)) return 'agent';
+    return 'other';
+  }
+
   function addCopyButtons(node) {
     for (const pre of node.querySelectorAll('pre')) {
       const wrap = el('div', 'codeblock');
@@ -87,7 +97,7 @@
         break;
       }
       case 'tool': {
-        node.classList.add(item.status);
+        node.classList.add(item.status, 'f-' + toolFamily(item.name));
         const d = el('details');
         const s = el('summary');
         s.append(
@@ -146,12 +156,12 @@
     if (stick) scrollEnd();
   }
 
-  /** Blinking caret on the streaming assistant item (CSS class, no inline styles) */
+  /** Blinking caret on the streaming assistant/thinking item (CSS class, no inline styles) */
   function markStreaming() {
-    for (const n of log.querySelectorAll('.assistant.streaming')) n.classList.remove('streaming');
+    for (const n of log.querySelectorAll('.streaming')) n.classList.remove('streaming');
     if (!busy) return;
     for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i]?.kind === 'assistant') {
+      if (items[i]?.kind === 'assistant' || items[i]?.kind === 'thinking') {
         log.children[i]?.classList.add('streaming');
         break;
       }

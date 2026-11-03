@@ -79,7 +79,7 @@ test('replays a real event stream: four items render in order', async () => {
   for (const e of events) tr.handle(e);
   await frame();
   const nodes = [...$('log').children];
-  assert.deepEqual(nodes.map(n => n.className), ['item user bubble', 'item thinking', 'item tool ok', 'item thinking', 'item assistant']);
+  assert.deepEqual(nodes.map(n => n.className), ['item user bubble', 'item thinking', 'item tool ok f-bash', 'item thinking', 'item assistant']);
   assert.equal(nodes[2].querySelector('.name').textContent, 'Bash');
   assert.equal(nodes[2].querySelector('pre').textContent, 'hello-from-tool');
   assert.equal(nodes[4].textContent.trim(), 'The command executed successfully and printed the expected output.');
