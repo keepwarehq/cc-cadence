@@ -1,79 +1,96 @@
 # ccprofile
 
-自用 VS Code 扩展：一个聊天面板，在 Claude（Max 订阅）和你自己买的其他模型之间切换。
+A personal VS Code extension: one chat panel that switches between Claude (Max subscription) and your own model profiles, driven by the local `claude` CLI.
 
-- **Claude 档**（内置）：直接启动本机的 `claude -p`，用它自己 `/login` 的 Max 订阅。扩展不读、不存、不转发 Claude 的 token。
-- **其他模型**：在面板里填 Base URL 和 API Key。也是启动同一个 `claude -p`，只是带上 `ANTHROPIC_BASE_URL` 和 Key，所以所有模型都能读写文件、跑命令。Base URL 要填服务商的 **Anthropic 兼容地址**。
-- 默认权限模式是 `bypassPermissions`：工具调用不再询问。只在受信任的工作区启用；没打开文件夹时拒绝运行。
+## Features
 
-## 用法
+- **Many profiles, one panel** — the built-in Claude profile runs the local `claude -p` on its own `/login` Max subscription. Other profiles point at any Anthropic-compatible endpoint with a Base URL + API key, so every model gets the same tools: read/write files, run commands, subagents.
+- **Session history** — conversations are stored by the CLI itself. Open History (🕘 in the composer) to reopen any past session, resume it, or delete it.
+- **Attachments** — paste a screenshot from the clipboard, drag files onto the composer, or use ＋. Images go straight to the model as base64 blocks; other files are staged under `.ccprofile/attachments/` and handed to the model as paths.
+- **@-mentions** — type `@` to fuzzy-search files and folders and drop a path into the message.
+- **Extra Claude Code parameters** — `ccprofile.claudeEnv` injects environment variables (e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); `ccprofile.claudeSettings` passes settings keys (e.g. `effortLevel`) via `--settings`.
+- **Background tasks** — background subagents and shells show up as live task cards. The CLI waits for them and wakes itself up when they finish, in the same conversation.
+- **Interrupt-and-replace** — sending a message while the model is still running stops the current run and starts the new message on the same session. Your latest word always wins.
+- **Permission modes** — opens with `bypassPermissions` (tools never ask). Switch per window from the composer pill. Only use in trusted workspaces.
 
-1. 先在终端里用 `claude` 执行 `/login`，登录 Max（只需要一次）。
-2. 点左侧活动栏的 ccprofile 图标，打开「对话」面板。
-3. 顶部第一个下拉框选模型：
-   - 「＋ 添加模型…」：依次填名称、Base URL、API Key、模型名（可留空）。
-   - 「管理模型…」：改 Base URL、换 Key、改模型名、重命名、删除。
-4. 第二个下拉框是权限模式，可以临时切到 `plan` 只读。
-5. 对话中途可以换模型：下一条消息用新模型，并用 `--resume` 接着同一个会话。
+## Getting started
 
-右下角状态栏显示当前模型，点击可切换。命令面板里有「ccprofile: 自检」，切换不生效时用它查原因。
+1. Log in once: run `claude` in a terminal and `/login` with your Max account.
+2. Click the ccprofile icon in the activity bar to open the Chat panel.
+3. Type and press Enter to send (Shift+Enter for a newline). Enter during IME composition never sends.
+4. Switch models with the pill at the bottom of the composer (same vendor resumes the session; switching vendors starts a new session).
+5. Switch the permission mode with the pill next to it (e.g. `plan` for read-only).
 
-## 工作方式
+If a switch doesn't seem to take effect, run `ccprofile: Doctor` from the command palette.
 
-每发一条消息，启动一次：
+## Adding a model profile
 
-```
-claude -p --output-format stream-json --verbose --include-partial-messages \
-       --permission-mode <模式> [--resume <session>] [--model <模型>]
-```
-
-- 消息从 stdin 写入，事件从 stdout 逐行读出。
-- 工作目录是当前打开的第一个文件夹。
-- 启动前先去掉进程环境里所有 `ANTHROPIC_*`、`CLAUDE_CODE_*` 变量，避免它们抢在 Max 订阅前面被用来认证。
-- 第三方档再加上：
-  - `ANTHROPIC_BASE_URL`
-  - Key：默认放进 `ANTHROPIC_AUTH_TOKEN`，可以改成 `ANTHROPIC_API_KEY`
-  - 模型名：同时映射到 `ANTHROPIC_MODEL` 和 opus / sonnet / haiku 三个别名
-
-每轮开始后，状态行会显示认证来源。Claude 档如果不是「Max 订阅」，会给出警告。
-
-### 注意
-
-- `~/.claude/settings.json` 或项目 `.claude/settings*.json` 的 `env` 里如果有 `ANTHROPIC_*`，它们比进程环境优先，扩展去不掉，所有档位都会受影响。「自检」会检查这一项。
-- 跨模型续接同一个会话（比如 Claude 聊到一半切到别的模型）时，整段历史都会发给新模型，对方不一定接受。如果报错，点「新对话」。
-
-## 设置
-
-| 设置 | 默认 | 说明 |
-|---|---|---|
-| `ccprofile.claudePath` | `~/.local/bin/claude` | claude CLI 路径 |
-| `ccprofile.defaultPermissionMode` | `bypassPermissions` | 每个窗口打开时的权限模式 |
-| `ccprofile.profiles` | `[]` | 其他模型档位（Key 不在这里，在系统钥匙串） |
-
-高级写法（在 settings.json 里）：
+Click the model pill → **Add model…**, or edit `ccprofile.profiles` directly:
 
 ```jsonc
 "ccprofile.profiles": [
-  { "id": "claude", "model": "opus" },                 // 覆盖内置 Claude 档
-  { "id": "claude-sonnet", "label": "Claude Sonnet", "model": "sonnet" },  // 不填 baseUrl = 也是 Claude 订阅
+  { "id": "claude", "model": "opus" },                 // override the built-in Claude profile
   {
-    "id": "my-model", "label": "我的模型",
-    "baseUrl": "<Anthropic 兼容地址>",
+    "id": "my-model", "label": "My Model",
+    "baseUrl": "<Anthropic-compatible endpoint>",      // claude appends /v1/messages
     "authEnv": "ANTHROPIC_AUTH_TOKEN",
-    "models": { "opus": "<模型名>", "sonnet": "<模型名>", "haiku": "<模型名>" },
+    "models": { "opus": "<name>", "sonnet": "<name>", "haiku": "<name>" },
     "env": { "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1" }
   }
 ]
 ```
 
-## 开发
+API keys are stored in the system keychain, never in settings files.
+
+## Extra parameters
+
+```jsonc
+"ccprofile.claudeEnv": {
+  "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000",
+  "API_TIMEOUT_MS": "3000000"
+},
+"ccprofile.claudeSettings": {
+  "effortLevel": "xhigh"
+}
+```
+
+Environment apply order: stripped ambient vars → built-in profile mapping → `claudeEnv` → per-profile `env` (profile wins).
+
+## How it works
+
+Every message spawns one process:
+
+```
+claude -p --output-format stream-json --verbose --include-partial-messages \
+       --input-format stream-json --permission-mode <mode> \
+       [--settings <file>] [--resume <id>] [--model <model>]
+```
+
+- The message goes to stdin as a single stream-json user line (text plus image blocks); events are read line-by-line from stdout.
+- The working directory is the first workspace folder. With no folder open, the panel refuses to run (it never falls back to `$HOME`).
+- All `ANTHROPIC_*` / `CLAUDE_CODE_*` variables are stripped from the inherited environment first, so they can't outrank the Max subscription. Explicitly configured `claudeEnv` entries are applied after the strip.
+- A turn ends when the process exits — not at the first `result` — which is what lets background tasks wake the conversation back up.
+
+The status line shows the auth source each turn. If the Claude profile is not on the Max subscription, you get a warning.
+
+## Notes
+
+- `env` blocks in `~/.claude/settings.json` or the workspace's `.claude/settings*.json` outrank the process environment and cannot be stripped by the extension. Doctor checks for this.
+- Sessions are not portable across vendors: resuming the same session with a different provider re-sends history that may 400 (thinking-block signatures). If that happens, press New chat.
+- A session interrupted while background tasks were still running leaves a **Check now** notice to resume and collect their results.
+
+## Privacy
+
+The extension never reads, stores, or forwards your Claude tokens. Third-party API keys live in the OS keychain.
+
+## Development
 
 ```bash
 npm install
-npm test          # 编译 + 离线测试（回放真实事件、jsdom 跑 webview）
-npm run smoke     # 真调本机 claude 跑两轮，会用一点订阅额度
-npm run package   # 打包成 ccprofile-0.0.1.vsix
-code --install-extension ccprofile-0.0.1.vsix
+npm test          # compile + offline tests (real event replay, jsdom webview)
+npm run smoke     # two real rounds against the local claude; uses some quota
+npm run package   # build ccprofile-<version>.vsix
 ```
 
-按 F5 会打开扩展开发窗口，工作区是 `sandbox/`。bypass 模式下在里面随便试，不会动到别的目录。
+Pressing F5 opens an extension development window with the `sandbox/` workspace; under bypass mode, try things there freely.

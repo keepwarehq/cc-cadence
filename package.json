@@ -2,7 +2,7 @@
   "name": "ccprofile",
   "displayName": "ccprofile",
   "description": "A chat panel that switches between Claude (Max subscription via the local claude CLI) and other models",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "local",
   "private": true,
   "license": "UNLICENSED",
