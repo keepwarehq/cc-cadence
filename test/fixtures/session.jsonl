@@ -1,0 +1,9 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-03T09:00:00.000Z","sessionId":"test-session-id"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-03T09:00:00.001Z","sessionId":"test-session-id"}
+{"type":"user","uuid":"u1","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:01.000Z","cwd":"/w","message":{"role":"user","content":"fix the login bug"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:02.000Z","cwd":"/w","isSidechain":false,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me look at the auth code","thinkingSignature":"sig"},{"type":"tool_use","id":"call_1","name":"Read","input":{"file_path":"src/auth.ts"}}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:03.000Z","cwd":"/w","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"file body line"}]}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:04.000Z","cwd":"/w","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"The null check is missing."}]}}
+{"type":"user","uuid":"u3","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:05.000Z","cwd":"/w","isSidechain":true,"message":{"role":"user","content":"sidechain prompt"}}
+{"type":"assistant","uuid":"a3","sessionId":"test-session-id","timestamp":"2026-11-03T09:00:06.000Z","cwd":"/w","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"sidechain answer"}]}}
+{"type":"ai-title","aiTitle":"Fix login bug","sessionId":"test-session-id"}
