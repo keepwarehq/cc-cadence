@@ -4,6 +4,7 @@ import { Item, Transcript, TurnTranslator } from './transcript';
 import { PERMISSION_MODES, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles } from './profiles';
 import { TurnHandle, runTurn } from './runner';
 import { addProfile, keyName, manageProfiles } from './profileUi';
+import { SessionSummary, deleteSession, listSessions, readTranscript } from './sessions';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
@@ -195,6 +196,54 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.refresh();
   }
 
+  async history(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
+    const sessions = await listSessions(folder.uri.fsPath);
+    if (!sessions.length) return this.notice('info', 'No saved sessions for this folder yet.');
+    type Pick = vscode.QuickPickItem & { id?: string };
+    const picks: Pick[] = sessions.map(s => ({
+      label: s.title,
+      description: relativeTime(s.mtimeMs),
+      detail: `${Math.max(1, Math.round(s.sizeBytes / 1024))} KB`,
+      id: s.sessionId,
+    }));
+    picks.push(
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: '$(trash) Delete…', id: '__delete__' },
+    );
+    const pick = await vscode.window.showQuickPick(picks, { title: 'History' });
+    if (!pick) return;
+    if (pick.id === '__delete__') return this.pickDelete(folder.uri.fsPath, sessions);
+    if (pick.id) await this.resumeSession(pick.id);
+  }
+
+  private async pickDelete(cwd: string, sessions: SessionSummary[]): Promise<void> {
+    type Pick = vscode.QuickPickItem & { id: string };
+    const picks: Pick[] = sessions.map(s => ({ label: s.title, description: relativeTime(s.mtimeMs), id: s.sessionId }));
+    const doomed = await vscode.window.showQuickPick(picks, { title: 'Delete sessions', canPickMany: true });
+    if (!doomed?.length) return;
+    for (const d of doomed) {
+      await deleteSession(d.id, cwd);
+      if (d.id === this.sessionId) this.sessionId = undefined;
+    }
+    this.notice('info', `Deleted ${doomed.length} session${doomed.length === 1 ? '' : 's'}.`);
+  }
+
+  async resumeSession(id: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
+    const items = await readTranscript(id, folder.uri.fsPath);
+    if (!items.length) return this.notice('error', 'That session could not be loaded.');
+    this.turn?.detach();
+    this.turn = undefined;
+    this.stop();
+    this.sessionId = id;
+    this.transcript.reset(items);
+    this.pushStatus();
+    void this.save();
+  }
+
   dispose(): void {
     this.turn?.detach();
     this.running?.stop();
@@ -213,6 +262,9 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         break;
       case 'addProfile': void this.addProfile(); break;
       case 'manageProfiles': void this.manageProfiles(); break;
+      case 'history': void this.history(); break;
+      case 'resumeSession': if (typeof m.id === 'string') void this.resumeSession(m.id); break;
+      case 'deleteSession': if (typeof m.id === 'string') void this.history(); break;
     }
   }
 
@@ -279,6 +331,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   <select id="profile" title="Model"></select>
   <select id="mode" title="Permission mode"></select>
   <span id="badge" class="badge" title="Tool calls never ask for permission" hidden>bypass</span>
+  <button id="history" class="ghost" title="History">🕘</button>
 </header>
 <main id="log"></main>
 <footer>
@@ -294,6 +347,16 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 </body>
 </html>`;
   }
+}
+
+function relativeTime(mtimeMs: number): string {
+  const s = Math.max(1, Math.round((Date.now() - mtimeMs) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
 }
 
 function hostOf(url: string): string {

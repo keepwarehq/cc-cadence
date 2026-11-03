@@ -191,6 +191,8 @@
 
   modeSel.addEventListener('change', () => vscode.postMessage({ type: 'setMode', mode: modeSel.value }));
 
+  $('history').addEventListener('click', () => vscode.postMessage({ type: 'history' }));
+
   window.addEventListener('message', ev => {
     const m = ev.data;
     if (m.type === 'state') applyState(m);

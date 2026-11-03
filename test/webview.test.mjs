@@ -10,7 +10,7 @@ const { Transcript, TurnTranslator } = require('../out/transcript.js');
 
 const read = p => readFileSync(new URL(p, import.meta.url), 'utf8');
 const BODY = `
-<header id="bar"><select id="profile"></select><select id="mode"></select><span id="badge" hidden>bypass</span></header>
+<header id="bar"><select id="profile"></select><select id="mode"></select><span id="badge" hidden>bypass</span><button id="history">🕘</button></header>
 <main id="log"></main>
 <footer><div id="status"></div><textarea id="input"></textarea><button id="send">Send</button></footer>`;
 

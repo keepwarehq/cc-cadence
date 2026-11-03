@@ -82,6 +82,12 @@
         "command": "ccprofile.doctor",
         "title": "Doctor",
         "category": "ccprofile"
+      },
+      {
+        "command": "ccprofile.history",
+        "title": "History",
+        "category": "ccprofile",
+        "icon": "$(history)"
       }
     ],
     "menus": {

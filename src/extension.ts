@@ -13,6 +13,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('ccprofile.addProfile', () => chat.addProfile()),
     vscode.commands.registerCommand('ccprofile.manageProfiles', () => chat.manageProfiles()),
     vscode.commands.registerCommand('ccprofile.doctor', () => runDoctor(ctx.secrets)),
+    vscode.commands.registerCommand('ccprofile.history', () => chat.history()),
   );
 }
 

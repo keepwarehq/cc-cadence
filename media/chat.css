@@ -218,6 +218,15 @@ button {
 
 button:hover { background: var(--vscode-button-hoverBackground); }
 
+button.ghost {
+  color: var(--vscode-foreground);
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 1em;
+}
+
+button.ghost:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)); }
+
 button.stop {
   color: var(--vscode-button-secondaryForeground);
   background: var(--vscode-button-secondaryBackground);
