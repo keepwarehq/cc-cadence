@@ -3,7 +3,7 @@ export type Item =
   | { kind: 'assistant'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
-  | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string }
+  | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string; durationMs?: number; tokens?: number }
   | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string; action?: 'checkTasks' };
 
 /** Incremental ops sent to the webview; the webview replays them into the same items */
@@ -43,6 +43,8 @@ export class Transcript {
   }
 }
 
+interface TaskUsage { total_tokens?: number; duration_ms?: number }
+
 interface TaskEvent {
   subtype?: string;
   task_id?: string;
@@ -51,6 +53,7 @@ interface TaskEvent {
   description?: string;
   status?: string;
   summary?: string;
+  usage?: TaskUsage;
   tasks?: Array<{ task_id?: string }>;
 }
 
@@ -144,7 +147,12 @@ export class TurnTranslator {
         const i = e.task_id ? this.taskItem.get(e.task_id) : undefined;
         const it = i === undefined ? undefined : this.t.items[i];
         if (it?.kind === 'task') {
-          this.t.set(i!, { ...it, description: e.description ?? it.description });
+          this.t.set(i!, {
+            ...it,
+            description: e.description ?? it.description,
+            durationMs: e.usage?.duration_ms ?? it.durationMs,
+            tokens: e.usage?.total_tokens ?? it.tokens,
+          });
         }
         break;
       }
@@ -152,7 +160,13 @@ export class TurnTranslator {
         const i = e.task_id ? this.taskItem.get(e.task_id) : undefined;
         const it = i === undefined ? undefined : this.t.items[i];
         if (it?.kind === 'task') {
-          this.t.set(i!, { ...it, status: e.status === 'completed' ? 'ok' : 'error', summary: e.summary ?? it.summary });
+          this.t.set(i!, {
+            ...it,
+            status: e.status === 'completed' ? 'ok' : 'error',
+            summary: e.summary ?? it.summary,
+            durationMs: e.usage?.duration_ms ?? it.durationMs,
+            tokens: e.usage?.total_tokens ?? it.tokens,
+          });
         }
         break;
       }
@@ -177,6 +191,8 @@ export class TurnTranslator {
       taskType: String(e.task_type ?? ''),
       description: String(e.description ?? ''),
       status: 'running',
+      durationMs: e.usage?.duration_ms,
+      tokens: e.usage?.total_tokens,
     }));
   }
 

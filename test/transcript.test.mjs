@@ -124,7 +124,13 @@ test('system task events become task cards even with parent_tool_use_id', () => 
   tr.handle({ type: 'system', subtype: 'task_started', parent_tool_use_id: 'call_x',
     task_id: 't1', tool_use_id: 'call_x', task_type: 'local_agent', description: 'Sleep then reply PONG' });
   assert.equal(t.items.length, 1);
-  assert.deepEqual(t.items[0], { kind: 'task', taskId: 't1', toolUseId: 'call_x', taskType: 'local_agent', description: 'Sleep then reply PONG', status: 'running' });
+  const card = t.items[0];
+  assert.equal(card.kind, 'task');
+  assert.equal(card.taskId, 't1');
+  assert.equal(card.toolUseId, 'call_x');
+  assert.equal(card.taskType, 'local_agent');
+  assert.equal(card.description, 'Sleep then reply PONG');
+  assert.equal(card.status, 'running');
   tr.handle({ type: 'system', subtype: 'task_progress', task_id: 't1', description: 'Running sleep' });
   assert.equal(t.items[0].status, 'running');
   assert.equal(t.items[0].description, 'Running sleep');
@@ -179,4 +185,19 @@ test('setUserAttachments pushes a user item carrying attachment names', () => {
     kind: 'user', text: 'look at this',
     attachments: [{ name: 'shot.png', mediaType: 'image/png' }],
   });
+});
+
+test('task_progress and task_notification capture duration and tokens', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'task_started', task_id: 't9', task_type: 'local_agent', description: 'review' });
+  tr.handle({ type: 'system', subtype: 'task_progress', task_id: 't9', description: 'review',
+    usage: { total_tokens: 147300, tool_uses: 2, duration_ms: 753000 }, last_tool_name: 'Read' });
+  assert.equal(t.items[0].durationMs, 753000);
+  assert.equal(t.items[0].tokens, 147300);
+  tr.handle({ type: 'system', subtype: 'task_notification', task_id: 't9', status: 'completed', summary: 'done',
+    usage: { total_tokens: 150000, duration_ms: 800000 } });
+  assert.equal(t.items[0].tokens, 150000);
+  assert.equal(t.items[0].durationMs, 800000);
+  assert.equal(t.items[0].status, 'ok');
 });

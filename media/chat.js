@@ -11,6 +11,8 @@
   const popup = $('mention-popup');
   const profilePill = $('profile');
   const modePill = $('mode');
+  const agentsBtn = $('agents');
+  const agentsPopup = $('agents-popup');
   const statusEl = $('status');
 
   /** @type {any[]} */
@@ -180,6 +182,7 @@
     items = next.slice(); // defensive copy: later ops mutate this array, never the host's
     log.replaceChildren(...items.map(render));
     markStreaming();
+    updateAgents();
     scrollEnd();
   }
 
@@ -192,12 +195,14 @@
         const stick = m.item.kind === 'user' || nearBottom();
         items.push(m.item);
         log.appendChild(render(m.item));
+        updateAgents();
         if (stick) scrollEnd();
         break;
       }
       case 'set':
         items[m.index] = m.item;
         mark(m.index);
+        updateAgents();
         break;
       case 'append':
         if (items[m.index]) {
@@ -209,6 +214,54 @@
   }
 
   // ---- Composer toolbar / attachment chips / mention popup ----
+
+  function fmtDuration(ms) {
+    if (typeof ms !== 'number' || ms <= 0) return '';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60), r = s % 60;
+    if (m < 60) return m + 'm ' + r + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
+
+  function fmtTokens(n) {
+    if (typeof n !== 'number' || n <= 0) return '';
+    if (n >= 1000) return Math.round(n / 100) / 10 + 'k tokens';
+    return n + ' tokens';
+  }
+
+  function updateAgents() {
+    const running = items.filter(x => x?.kind === 'task' && x.status === 'running');
+    agentsBtn.hidden = items.every(x => x?.kind !== 'task');
+    agentsBtn.textContent = '\u26a1' + (running.length ? running.length : '');
+    agentsBtn.classList.toggle('live', running.length > 0);
+    if (!agentsBtn.hidden && !agentsPopup.hidden) renderAgentsPopup();
+  }
+
+  function renderAgentsPopup() {
+    const tasks = items.filter(x => x?.kind === 'task');
+    agentsPopup.replaceChildren(...(tasks.length
+      ? tasks.map(x => {
+          const row = el('div', 'agent-row ' + x.status);
+          row.append(el('span', 'state', x.status === 'running' ? '\u25d4' : x.status === 'ok' ? '\u2713' : '\u2717'),
+                     el('span', 'name', x.description));
+          const meta = [fmtDuration(x.durationMs), fmtTokens(x.tokens)].filter(Boolean).join(' \u00b7 ');
+          if (meta) row.appendChild(el('span', 'meta', meta));
+          row.addEventListener('click', () => {
+            const i = items.indexOf(x);
+            const node = log.children[i];
+            if (node) node.scrollIntoView({ block: 'center' });
+            closeAgents();
+          });
+          return row;
+        })
+      : [el('div', 'mention-empty', 'No background tasks in this conversation')]));
+    agentsPopup.hidden = false;
+  }
+
+  function closeAgents() { agentsPopup.hidden = true; }
+
+  agentsBtn.addEventListener('click', () => (agentsPopup.hidden ? renderAgentsPopup() : closeAgents()));
 
   function renderChips() {
     chips.replaceChildren(...attachments.map(a => {

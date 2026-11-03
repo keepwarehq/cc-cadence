@@ -536,6 +536,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 <main id="log"></main>
 <footer>
   <div id="mention-popup" hidden></div>
+  <div id="agents-popup" hidden></div>
   <div id="status"></div>
   <div id="chips"></div>
   <div class="composer" id="composer">
@@ -544,6 +545,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       <button id="attach" class="ghost" title="Attach files">＋</button>
       <button id="mention" class="ghost" title="Mention a file (@)">@</button>
       <button id="history" class="ghost" title="History">🕘</button>
+      <button id="agents" class="ghost" title="Background agents" hidden></button>
       <button id="profile" class="pill" title="Switch model"></button>
       <button id="mode" class="pill" title="Permission mode"></button>
       <span class="spacer"></span>

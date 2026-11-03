@@ -13,6 +13,7 @@ const BODY = `
 <main id="log"></main>
 <footer>
   <div id="mention-popup" hidden></div>
+  <div id="agents-popup" hidden></div>
   <div id="status"></div>
   <div id="chips"></div>
   <div class="composer" id="composer">
@@ -20,7 +21,7 @@ const BODY = `
     <div class="toolbar">
       <button id="attach">＋</button><button id="mention">@</button><button id="history">🕘</button>
       <button id="profile"></button><button id="mode"></button><span class="spacer"></span>
-      <button id="stop" hidden>⏹</button><button id="send">Send</button>
+      <button id="agents" hidden>⚡</button><button id="stop" hidden>⏹</button><button id="send">Send</button>
     </div>
   </div>
 </footer>`;
@@ -254,4 +255,31 @@ test('attachData carries a cid and state attachments carry no base64 thumb', asy
   const chip = $('chips').querySelector('.chip');
   assert.ok(chip, 'chip rendered');
   assert.ok(chip.querySelector('img'), 'thumbnail rendered from the webview cache despite thumbless state');
+});
+
+
+test('agents pill counts running tasks and the popup lists each with meta', async () => {
+  const { send, $, frame } = boot();
+  send(STATE);
+  send({ type: 'op', op: 'push', item: { kind: 'task', taskId: 'a', taskType: 'local_agent', description: 'review branch', status: 'running', durationMs: 753000, tokens: 147300 } });
+  send({ type: 'op', op: 'push', item: { kind: 'task', taskId: 'b', taskType: 'local_bash', description: 'sleep', status: 'ok', durationMs: 72000, tokens: 60300 } });
+  await frame();
+  const pill = $('agents');
+  assert.equal(pill.hidden, false, 'pill visible with tasks');
+  assert.ok(pill.textContent.includes('1'), 'pill shows the running count');
+  pill.click();
+  const popup = $('agents-popup');
+  assert.equal(popup.hidden, false, 'popup opens');
+  assert.ok(popup.textContent.includes('review branch'));
+  assert.ok(popup.textContent.includes('12m 33s'), 'duration formatted');
+  assert.ok(popup.textContent.includes('147.3k'), 'tokens formatted');
+  pill.click();
+  assert.equal(popup.hidden, true, 'pill toggles the popup closed');
+});
+
+test('agents pill hides when there are no task items', async () => {
+  const { send, $, frame } = boot();
+  send(STATE);
+  await frame();
+  assert.equal($('agents').hidden, true);
 });
