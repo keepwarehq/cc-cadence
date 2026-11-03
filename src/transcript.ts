@@ -1,8 +1,9 @@
 export type Item =
-  | { kind: 'user'; text: string; profile?: string }
+  | { kind: 'user'; text: string; profile?: string; attachments?: { name: string; mediaType: string }[] }
   | { kind: 'assistant'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
+  | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string }
   | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string };
 
 /** Incremental ops sent to the webview; the webview replays them into the same items */
@@ -41,6 +42,17 @@ export class Transcript {
   }
 }
 
+interface TaskEvent {
+  subtype?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  task_type?: string;
+  description?: string;
+  status?: string;
+  summary?: string;
+  tasks?: Array<{ task_id?: string }>;
+}
+
 export interface TurnHooks {
   init?(e: { sessionId?: string; model?: string; apiKeySource?: string; permissionMode?: string }): void;
   rateLimit?(info: any): void;
@@ -53,9 +65,12 @@ const MAX_OUTPUT = 8000;
 export class TurnTranslator {
   sessionId?: string;
   gotResult = false;
+  /** Count of alive background tasks from the last background_tasks_changed event */
+  pendingTasks = 0;
   private detached = false;
   private readonly blockItem = new Map<number, number>(); // content block index within the current message → item index
   private readonly toolItem = new Map<string, number>();  // tool_use_id → item index
+  private readonly taskItem = new Map<string, number>();  // task_id → item index
   private readonly streamed = new Set<string>();          // message ids that received stream_events
 
   constructor(private readonly t: Transcript, private readonly hooks: TurnHooks = {}) {}
@@ -67,7 +82,13 @@ export class TurnTranslator {
 
   handle(e: any): void {
     if (this.detached || !e || typeof e !== 'object') return;
-    if (e.parent_tool_use_id) return; // subagent internals stay collapsed
+    // system task events must pass even if they ever carry a parent tool id
+    if (e.type === 'system') {
+      this.onSystem(e);
+      if (e.subtype !== 'init') return;
+    } else if (e.parent_tool_use_id) {
+      return; // subagent internals stay collapsed
+    }
     switch (e.type) {
       case 'system':
         if (e.subtype === 'init') {
@@ -95,13 +116,67 @@ export class TurnTranslator {
     }
   }
 
-  /** After the process ends, mark tool cards still running as failed */
+  /** After the process ends, mark tool cards and task cards still running as failed */
   finish(reason: string): void {
     if (this.detached) return;
     for (const i of this.toolItem.values()) {
       const it = this.t.items[i];
       if (it?.kind === 'tool' && it.status === 'running') this.t.set(i, { ...it, status: 'error', output: it.output ?? reason });
     }
+    for (const i of this.taskItem.values()) {
+      const it = this.t.items[i];
+      if (it?.kind === 'task' && it.status === 'running') this.t.set(i, { ...it, status: 'error', summary: it.summary ?? reason });
+    }
+  }
+
+  /** Push the user message together with its attachment metadata (names only, never base64) */
+  setUserAttachments(text: string, attachments: { name: string; mediaType: string }[]): void {
+    this.t.push(attachments.length ? { kind: 'user', text, attachments } : { kind: 'user', text });
+  }
+
+  private onSystem(e: TaskEvent): void {
+    switch (e.subtype) {
+      case 'task_started':
+        this.upsertTask(e);
+        break;
+      case 'task_progress': {
+        const i = e.task_id ? this.taskItem.get(e.task_id) : undefined;
+        const it = i === undefined ? undefined : this.t.items[i];
+        if (it?.kind === 'task') {
+          this.t.set(i!, { ...it, description: e.description ?? it.description });
+        }
+        break;
+      }
+      case 'task_notification': {
+        const i = e.task_id ? this.taskItem.get(e.task_id) : undefined;
+        const it = i === undefined ? undefined : this.t.items[i];
+        if (it?.kind === 'task') {
+          this.t.set(i!, { ...it, status: e.status === 'completed' ? 'ok' : 'error', summary: e.summary ?? it.summary });
+        }
+        break;
+      }
+      case 'background_tasks_changed':
+        this.pendingTasks = Array.isArray(e.tasks) ? e.tasks.length : 0;
+        break;
+    }
+  }
+
+  private upsertTask(e: TaskEvent): void {
+    if (!e.task_id) return;
+    const i = this.taskItem.get(e.task_id);
+    const prev = i === undefined ? undefined : this.t.items[i];
+    if (prev?.kind === 'task') {
+      this.t.set(i!, { ...prev, description: e.description ?? prev.description });
+      return;
+    }
+    this.taskItem.set(e.task_id, this.t.push({
+      kind: 'task',
+      taskId: e.task_id,
+      toolUseId: typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
+      taskType: String(e.task_type ?? ''),
+      description: String(e.description ?? ''),
+      status: 'running',
+    }));
   }
 
   private onStream(ev: any): void {

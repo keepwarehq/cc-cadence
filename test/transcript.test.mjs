@@ -117,3 +117,66 @@ test('profiles: built-in Claude first, overridable, bad entries reported', () =>
   assert.equal(problems.length, 2);
   assert.deepEqual(loadProfiles(undefined).profiles, [CLAUDE]);
 });
+
+test('system task events become task cards even with parent_tool_use_id', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'task_started', parent_tool_use_id: 'call_x',
+    task_id: 't1', tool_use_id: 'call_x', task_type: 'local_agent', description: 'Sleep then reply PONG' });
+  assert.equal(t.items.length, 1);
+  assert.deepEqual(t.items[0], { kind: 'task', taskId: 't1', toolUseId: 'call_x', taskType: 'local_agent', description: 'Sleep then reply PONG', status: 'running' });
+  tr.handle({ type: 'system', subtype: 'task_progress', task_id: 't1', description: 'Running sleep' });
+  assert.equal(t.items[0].status, 'running');
+  assert.equal(t.items[0].description, 'Running sleep');
+  tr.handle({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', summary: 'PONG' });
+  assert.equal(t.items[0].status, 'ok');
+  assert.equal(t.items[0].summary, 'PONG');
+});
+
+test('task_notification with a non-completed status marks the card error', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'task_started', task_id: 't2', task_type: 'local_bash', description: 'bg job' });
+  tr.handle({ type: 'system', subtype: 'task_notification', task_id: 't2', status: 'failed' });
+  assert.equal(t.items[0].status, 'error');
+});
+
+test('background_tasks_changed sets pendingTasks', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'a' }, { task_id: 'b' }] });
+  assert.equal(tr.pendingTasks, 2);
+  tr.handle({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+  assert.equal(tr.pendingTasks, 0);
+});
+
+test('two result events in one stream do not duplicate items; sessionId takes the last', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'init', session_id: 's1' });
+  tr.handle({ type: 'result', subtype: 'success', session_id: 's1', num_turns: 2 });
+  tr.handle({ type: 'system', subtype: 'init', session_id: 's2' });
+  tr.handle({ type: 'result', subtype: 'success', session_id: 's2', num_turns: 1 });
+  assert.ok(tr.gotResult);
+  assert.equal(tr.sessionId, 's2');
+  assert.equal(t.items.length, 0);
+});
+
+test('finish fails running task cards too', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'system', subtype: 'task_started', task_id: 't3', task_type: 'local_agent', description: 'still going' });
+  tr.finish('Interrupted');
+  assert.equal(t.items[0].status, 'error');
+  assert.equal(t.items[0].summary, 'Interrupted');
+});
+
+test('setUserAttachments pushes a user item carrying attachment names', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.setUserAttachments('look at this', [{ name: 'shot.png', mediaType: 'image/png' }]);
+  assert.deepEqual(t.items[0], {
+    kind: 'user', text: 'look at this',
+    attachments: [{ name: 'shot.png', mediaType: 'image/png' }],
+  });
+});
