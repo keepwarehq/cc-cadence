@@ -474,3 +474,15 @@ test('clicking the pill itself does not immediately reclose via the outside hand
   $('profile').click();
   assert.equal($('profile-popup').hidden, false, 'opening click is not swallowed by outside-close');
 });
+
+test('every composer popup hides when its [hidden] attribute is set (CSS does not defeat it)', () => {
+  // #id selectors beat the UA [hidden] rule, so any popup given an explicit display must also state [hidden]{display:none}
+  const css = read('../media/chat.css');
+  const popups = [...css.matchAll(/#([a-z-]+-popup)\s*(?:,|\{)/g)].map(m => m[1]);
+  const uniq = [...new Set(popups)];
+  assert.ok(uniq.length >= 3, 'found the popups');
+  for (const id of uniq) {
+    const hasHiddenRule = new RegExp(`#${id}\\[hidden\\]`).test(css);
+    assert.ok(hasHiddenRule, `#${id} must have a [hidden] display:none rule or it can never be closed`);
+  }
+});

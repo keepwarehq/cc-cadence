@@ -344,7 +344,23 @@ footer > * {
 .mention-item .mention-icon { color: var(--vscode-descriptionForeground); }
 
 #mode-popup,
-#profile-popup,
+#profile-popup {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 4px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.3)));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+/* #id specificity beats the UA [hidden] rule, so the hide must be stated explicitly or the menu never closes */
+#mode-popup[hidden],
+#profile-popup[hidden] { display: none; }
+#mention-popup[hidden],
+#agents-popup[hidden] { display: none; }
+
 .mode-row {
   display: flex;
   flex-direction: column;
@@ -495,6 +511,7 @@ footer > * {
   background: var(--vscode-foreground);
 }
 
+#mode-popup { max-height: min(460px, 75vh); }
 #profile-popup { max-height: min(460px, 75vh); }
 
 .menu-row {
