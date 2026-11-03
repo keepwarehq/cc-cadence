@@ -118,11 +118,11 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     });
   }
 
-  /** Open (or reveal) the chat as a tab in the editor area — its tab shows the colored logo via iconPath */
+  /** Open (or reveal) the chat in its own editor group beside the files — the tab shows the colored logo via iconPath */
   openEditorPanel(): void {
-    if (this.editorPanel) { this.editorPanel.reveal(); return; }
+    if (this.editorPanel) { this.editorPanel.reveal(vscode.ViewColumn.Beside); return; }
     const media = vscode.Uri.joinPath(this.ctx.extensionUri, 'media');
-    const panel = vscode.window.createWebviewPanel('ccprofile.editor', 'CC Cadence', vscode.ViewColumn.Active, {
+    const panel = vscode.window.createWebviewPanel('ccprofile.editor', 'CC Cadence', vscode.ViewColumn.Beside, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [media],
@@ -130,6 +130,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     panel.iconPath = vscode.Uri.joinPath(media, 'logo.svg');
     panel.webview.html = this.html(panel.webview, media);
     panel.webview.onDidReceiveMessage(m => this.onMessage(m), undefined, this.disposables);
+    // lock the new group so opening files doesn't replace the chat — it stays in its own split (like the Claude Code editor)
+    void vscode.commands.executeCommand('workbench.action.lockEditorGroup');
     this.editorPanel = panel;
     this.webviews.add(panel.webview);
     panel.onDidDispose(() => {
