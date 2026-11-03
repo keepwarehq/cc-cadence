@@ -1,4 +1,4 @@
-// 用真实抓到的一轮 stream-json（thinking → Bash 工具 → 文本）回放，不调用网络
+// Replays a real captured round of stream-json (thinking → Bash tool → text), no network calls
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -24,7 +24,7 @@ function replay(evts) {
   return { t, tr, ops, seen };
 }
 
-// 和 media/chat.js 里 applyOp 同样的规则
+// Same rules as applyOp in media/chat.js
 function applyOps(ops) {
   let items = [];
   for (const m of ops) {
@@ -36,7 +36,7 @@ function applyOps(ops) {
   return items;
 }
 
-test('流式事件 → 思考、工具卡片、思考、回答', () => {
+test('stream events → thinking, tool card, thinking, answer', () => {
   const { t, tr, seen } = replay(events);
   assert.deepEqual(t.items.map(i => i.kind), ['thinking', 'tool', 'thinking', 'assistant']);
   const tool = t.items[1];
@@ -51,27 +51,27 @@ test('流式事件 → 思考、工具卡片、思考、回答', () => {
   assert.equal(seen.rate.status, 'allowed');
 });
 
-test('没有 stream_event 时用完整消息兜底，结果一致', () => {
+test('without stream events the full-message fallback produces the same result', () => {
   const streamed = replay(events).t.items;
   const fallback = replay(events.filter(e => e.type !== 'stream_event')).t.items;
   assert.deepEqual(fallback, streamed);
 });
 
-test('webview 按 op 还原出的列表和扩展端一致', () => {
+test('webview replay of ops matches the extension-side list', () => {
   const { t, ops } = replay(events);
   assert.deepEqual(applyOps(ops), t.items);
 });
 
-test('中途停止：未完成的工具卡片标成失败', () => {
+test('stopping midway: unfinished tool cards are marked failed', () => {
   const cut = events.findIndex(e => e.type === 'user');
   const { t, tr } = replay(events.slice(0, cut));
-  tr.finish('已中断');
+  tr.finish('Interrupted');
   const tool = t.items.find(i => i.kind === 'tool');
   assert.equal(tool.status, 'error');
-  assert.equal(tool.output, '已中断');
+  assert.equal(tool.output, 'Interrupted');
 });
 
-test('detach 之后的事件不再写入', () => {
+test('events after detach are not recorded', () => {
   const t = new Transcript();
   const tr = new TurnTranslator(t);
   tr.detach();
@@ -79,7 +79,7 @@ test('detach 之后的事件不再写入', () => {
   assert.equal(t.items.length, 0);
 });
 
-test('Claude 档：去掉所有会抢认证的变量', () => {
+test('Claude profile: strips all auth-stealing variables', () => {
   const env = buildEnv({
     PATH: '/usr/bin', HOME: '/h',
     ANTHROPIC_API_KEY: 'x', ANTHROPIC_AUTH_TOKEN: 'y', ANTHROPIC_BASE_URL: 'z',
@@ -88,7 +88,7 @@ test('Claude 档：去掉所有会抢认证的变量', () => {
   assert.deepEqual(env, { PATH: '/usr/bin', HOME: '/h', CLAUDE_CONFIG_DIR: '/c' });
 });
 
-test('第三方档：Base URL、Key、模型别名映射', () => {
+test('third-party profile: base URL, key, model alias mapping', () => {
   const env = buildEnv({ PATH: '/usr/bin', ANTHROPIC_API_KEY: 'leak' },
     { id: 'm', label: 'M', baseUrl: 'https://example.test/anthropic', model: 'big', models: { haiku: 'small' } }, 'sk-1');
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
@@ -104,7 +104,7 @@ test('第三方档：Base URL、Key、模型别名映射', () => {
   assert.equal(viaApiKey.ANTHROPIC_AUTH_TOKEN, undefined);
 });
 
-test('档位：内置 Claude 在第一位，可被覆盖，坏条目报问题', () => {
+test('profiles: built-in Claude first, overridable, bad entries reported', () => {
   const { profiles, problems } = loadProfiles([
     { id: 'claude', model: 'opus' },
     { id: 'glm', label: 'GLM', baseUrl: 'https://e.test' },

@@ -24,7 +24,7 @@
   marked.use({ gfm: true, breaks: true });
   const md = (/** @type {string} */ text) => DOMPurify.sanitize(marked.parse(text || ''));
 
-  // ---- 渲染：log 的第 i 个子节点永远对应 items[i] ----
+  // ---- Rendering: the i-th child of #log always corresponds to items[i] ----
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -45,7 +45,7 @@
         break;
       case 'thinking': {
         const d = el('details');
-        d.append(el('summary', '', '思考'), el('div', 'text', item.text));
+        d.append(el('summary', '', 'Thinking'), el('div', 'text', item.text));
         node.appendChild(d);
         break;
       }
@@ -79,7 +79,7 @@
     const node = render(items[i]);
     const oldDetails = old && old.querySelector('details');
     const newDetails = node.querySelector('details');
-    if (oldDetails && newDetails) newDetails.open = oldDetails.open; // 流式更新时保持展开状态
+    if (oldDetails && newDetails) newDetails.open = oldDetails.open; // keep expanded state across streamed updates
     if (old) log.replaceChild(node, old);
     else log.appendChild(node);
   }
@@ -131,7 +131,7 @@
     }
   }
 
-  // ---- 顶栏 / 底栏 ----
+  // ---- Top bar / bottom bar ----
 
   function option(value, label) {
     const o = el('option', '', label);
@@ -143,8 +143,8 @@
     activeId = m.activeId;
     profileSel.replaceChildren(
       ...m.profiles.map(p => option(p.id, p.label)),
-      option(ADD, '＋ 添加模型…'),
-      option(MANAGE, '管理模型…'),
+      option(ADD, '+ Add model…'),
+      option(MANAGE, 'Manage models…'),
     );
     profileSel.value = activeId;
     modeSel.replaceChildren(...m.modes.map(x => option(x, x)));
@@ -157,7 +157,7 @@
 
   function setBusy(b) {
     busy = b;
-    sendBtn.textContent = busy ? '停止' : '发送';
+    sendBtn.textContent = busy ? 'Stop' : 'Send';
     sendBtn.classList.toggle('stop', busy);
   }
 
@@ -173,7 +173,7 @@
   sendBtn.addEventListener('click', () => (busy ? vscode.postMessage({ type: 'stop' }) : send()));
 
   input.addEventListener('keydown', e => {
-    // 输入法组字时的 Enter 是选词，不是发送
+    // Enter during IME composition picks a candidate; it must not send
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       send();
@@ -183,7 +183,7 @@
 
   profileSel.addEventListener('change', () => {
     const v = profileSel.value;
-    profileSel.value = activeId; // 真正切换以扩展回传的 state 为准
+    profileSel.value = activeId; // the real switch is confirmed by the state the extension sends back
     if (v === ADD) vscode.postMessage({ type: 'addProfile' });
     else if (v === MANAGE) vscode.postMessage({ type: 'manageProfiles' });
     else vscode.postMessage({ type: 'setProfile', id: v });

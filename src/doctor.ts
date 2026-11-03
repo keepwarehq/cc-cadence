@@ -26,7 +26,7 @@ function claudeVersion(bin: string): Promise<{ ok: boolean; text: string }> {
       resolve(err ? { ok: false, text: err.message } : { ok: true, text: String(out).trim() })));
 }
 
-/** 切换不生效时最常见的原因：claude 找不到、settings 文件里的 env 抢了认证、第三方档没 key */
+/** Most common reason a switch does not take effect: claude missing, env overrides in settings files stealing auth, third-party profile without a key */
 export async function runDoctor(secrets: vscode.SecretStorage): Promise<void> {
   channel ??= vscode.window.createOutputChannel('ccprofile');
   const lines: string[] = [];
@@ -40,10 +40,10 @@ export async function runDoctor(secrets: vscode.SecretStorage): Promise<void> {
   try {
     fs.accessSync(bin, fs.constants.X_OK);
     const v = await claudeVersion(bin);
-    if (v.ok) ok(`claude：${bin}（${v.text}）`);
-    else warn(`claude --version 失败（${bin}）：${v.text}`);
+    if (v.ok) ok(`claude: ${bin} (${v.text})`);
+    else warn(`claude --version failed (${bin}): ${v.text}`);
   } catch {
-    warn(`找不到可执行的 claude：${bin}，在设置 ccprofile.claudePath 里改`);
+    warn(`claude executable not found: ${bin} — fix it in the ccprofile.claudePath setting`);
   }
 
   const files = [path.join(os.homedir(), '.claude', 'settings.json')];
@@ -54,26 +54,26 @@ export async function runDoctor(secrets: vscode.SecretStorage): Promise<void> {
   for (const f of files) {
     const r = envOverrides(f);
     if (r === 'missing') continue;
-    if (r === 'invalid') warn(`${f} 不是合法 JSON`);
-    else if (r.length) warn(`${f} 的 env 里有 ${r.join(', ')}：settings 文件里的 env 比进程环境优先，ccprofile 去不掉，所有档位都会受影响`);
-    else ok(`${f}：没有覆盖认证的 env`);
+    if (r === 'invalid') warn(`${f} is not valid JSON`);
+    else if (r.length) warn(`${f} has env keys ${r.join(', ')}: env in a settings file outranks the process environment and ccprofile cannot strip it — every profile is affected`);
+    else ok(`${f}: no auth-overriding env`);
   }
 
   const inherited = Object.keys(process.env).filter(k => OVERRIDE.test(k));
-  if (inherited.length) info(`VS Code 进程环境里有 ${inherited.join(', ')}，启动 claude 前会被去掉`);
-  if (process.env.CLAUDE_CONFIG_DIR) info(`CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR}：claude 会用这个目录下的登录`);
+  if (inherited.length) info(`VS Code's own environment has ${inherited.join(', ')}; they are removed before spawning claude`);
+  if (process.env.CLAUDE_CONFIG_DIR) info(`CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR}: claude uses the login in that directory`);
 
   const { profiles, problems: profileProblems } = loadProfiles(cfg.get('profiles'));
   for (const p of profileProblems) warn(p);
   for (const p of profiles.filter(isThirdParty)) {
-    if (await secrets.get(keyName(p.id))) ok(`「${p.label}」${p.baseUrl}：API Key 已保存`);
-    else warn(`「${p.label}」还没有 API Key`);
+    if (await secrets.get(keyName(p.id))) ok(`"${p.label}" ${p.baseUrl}: API key saved`);
+    else warn(`"${p.label}" has no API key yet`);
   }
-  info('Claude 档是否走 Max 订阅：看每轮开始后状态行显示的是不是「Max 订阅」');
+  info('Whether the Claude profile really uses the Max subscription: check the status line after each turn says "Max subscription"');
 
   channel.clear();
-  channel.appendLine(`ccprofile 自检 ${new Date().toLocaleString()}`);
+  channel.appendLine(`ccprofile doctor ${new Date().toLocaleString()}`);
   for (const l of lines) channel.appendLine(l);
   channel.show(true);
-  void vscode.window.showInformationMessage(problems ? `ccprofile 自检：${problems} 个问题，详见输出面板` : 'ccprofile 自检：没发现问题');
+  void vscode.window.showInformationMessage(problems ? `ccprofile doctor: ${problems} problem(s), see the output panel` : 'ccprofile doctor: no problems found');
 }

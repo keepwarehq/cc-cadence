@@ -5,7 +5,7 @@ export type Item =
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
   | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string };
 
-/** 发给 webview 的增量操作；webview 用同样的规则还原出 items */
+/** Incremental ops sent to the webview; the webview replays them into the same items */
 export type Op =
   | { op: 'reset'; items: Item[] }
   | { op: 'push'; item: Item }
@@ -49,25 +49,25 @@ export interface TurnHooks {
 
 const MAX_OUTPUT = 8000;
 
-/** 把一轮 `claude -p --output-format stream-json` 的事件翻译成 Transcript 里的条目 */
+/** Translate one `claude -p --output-format stream-json` round into Transcript items */
 export class TurnTranslator {
   sessionId?: string;
   gotResult = false;
   private detached = false;
-  private readonly blockItem = new Map<number, number>(); // 当前消息的 content block index → item 下标
-  private readonly toolItem = new Map<string, number>();  // tool_use_id → item 下标
-  private readonly streamed = new Set<string>();          // 收到过 stream_event 的消息 id
+  private readonly blockItem = new Map<number, number>(); // content block index within the current message → item index
+  private readonly toolItem = new Map<string, number>();  // tool_use_id → item index
+  private readonly streamed = new Set<string>();          // message ids that received stream_events
 
   constructor(private readonly t: Transcript, private readonly hooks: TurnHooks = {}) {}
 
-  /** 会话被清空后调用：之后的事件一律丢掉，免得写进新会话 */
+  /** Called when the chat is cleared: later events are dropped so they never leak into the new session */
   detach(): void {
     this.detached = true;
   }
 
   handle(e: any): void {
     if (this.detached || !e || typeof e !== 'object') return;
-    if (e.parent_tool_use_id) return; // 子 agent 的内部过程不展开
+    if (e.parent_tool_use_id) return; // subagent internals stay collapsed
     switch (e.type) {
       case 'system':
         if (e.subtype === 'init') {
@@ -95,7 +95,7 @@ export class TurnTranslator {
     }
   }
 
-  /** 进程结束后把还在跑的工具卡片标成失败 */
+  /** After the process ends, mark tool cards still running as failed */
   finish(reason: string): void {
     if (this.detached) return;
     for (const i of this.toolItem.values()) {
@@ -129,7 +129,7 @@ export class TurnTranslator {
   }
 
   private onAssistant(m: any): void {
-    // 流式事件里已经逐字推过的文本不再重复；没收到流式事件时（兜底）才用完整消息
+    // Text already streamed token-by-token is not repeated; the full message is used only when no stream events arrived (fallback)
     const streamed = this.streamed.has(m?.id);
     for (const b of m?.content ?? []) {
       if (b?.type === 'tool_use') this.upsertTool(b);

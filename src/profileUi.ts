@@ -5,9 +5,9 @@ export const keyName = (id: string) => `ccprofile.key.${id}`;
 
 type RawProfile = Record<string, any>;
 
-const BASE_URL_PROMPT = '服务商提供的 Anthropic 兼容地址（claude 会在后面拼 /v1/messages）';
+const BASE_URL_PROMPT = 'Anthropic-compatible endpoint from the provider (claude appends /v1/messages)';
 
-// 只读写用户级设置，避免把档位写进项目的 .vscode/settings.json
+// Only read/write user-level settings; profiles must not leak into the project's .vscode/settings.json
 function readGlobal(): RawProfile[] {
   const v = vscode.workspace.getConfiguration('ccprofile').inspect<unknown>('profiles')?.globalValue;
   return Array.isArray(v) ? v.map(p => (p && typeof p === 'object' ? { ...p } : p)) : [];
@@ -17,13 +17,13 @@ function writeGlobal(list: RawProfile[]): Thenable<void> {
   return vscode.workspace.getConfiguration('ccprofile').update('profiles', list, vscode.ConfigurationTarget.Global);
 }
 
-const required = (v: string) => (v.trim() ? undefined : '不能为空');
+const required = (v: string) => (v.trim() ? undefined : 'Cannot be empty');
 
 function urlCheck(v: string): string | undefined {
   try {
-    return /^https?:$/.test(new URL(v.trim()).protocol) ? undefined : '要以 http:// 或 https:// 开头';
+    return /^https?:$/.test(new URL(v.trim()).protocol) ? undefined : 'Must start with http:// or https://';
   } catch {
-    return '不是有效的 URL';
+    return 'Not a valid URL';
   }
 }
 
@@ -39,16 +39,16 @@ function uniqueId(label: string, list: RawProfile[]): string {
   return id;
 }
 
-/** 依次问名称、Base URL、API Key、模型名；返回新档位的 id */
+/** Ask for label, base URL, API key and model name in sequence; returns the new profile's id */
 export async function addProfile(secrets: vscode.SecretStorage): Promise<string | undefined> {
-  const step = (n: number) => `添加模型（${n}/4）`;
-  const label = await ask(step(1), '显示名称', { placeHolder: '例如 GLM、Kimi', validateInput: required });
+  const step = (n: number) => `Add model (${n}/4)`;
+  const label = await ask(step(1), 'Display name', { placeHolder: 'e.g. GLM, Kimi', validateInput: required });
   if (label === undefined) return;
   const baseUrl = await ask(step(2), BASE_URL_PROMPT, { placeHolder: 'https://…', validateInput: urlCheck });
   if (baseUrl === undefined) return;
-  const key = await ask(step(3), 'API Key（存进系统钥匙串，不写进设置文件）', { password: true, validateInput: required });
+  const key = await ask(step(3), 'API Key (stored in the system keychain, never in settings)', { password: true, validateInput: required });
   if (key === undefined) return;
-  const model = await ask(step(4), '模型名（可留空：留空则用服务商的默认映射）');
+  const model = await ask(step(4), 'Model name (leave empty to use the provider default mapping)');
   if (model === undefined) return;
 
   const list = readGlobal();
@@ -60,7 +60,7 @@ export async function addProfile(secrets: vscode.SecretStorage): Promise<string 
   return id;
 }
 
-/** 改 Base URL / API Key / 模型名 / 名称，或删除；从这里新加的档位返回它的 id */
+/** Edit base URL / API key / model name / label, or delete; returns the id of a profile added here */
 export async function manageProfiles(secrets: vscode.SecretStorage): Promise<string | undefined> {
   const list = readGlobal();
   type Pick = vscode.QuickPickItem & { id?: string };
@@ -69,10 +69,10 @@ export async function manageProfiles(secrets: vscode.SecretStorage): Promise<str
     .map(p => ({ label: p.label || p.id, description: p.baseUrl, id: p.id }));
   picks.push(
     { label: '', kind: vscode.QuickPickItemKind.Separator },
-    { label: '$(add) 添加模型…', id: '__add__' },
-    { label: '$(json) 在 settings.json 里编辑', id: '__json__' },
+    { label: '$(add) Add model…', id: '__add__' },
+    { label: '$(json) Edit in settings.json', id: '__json__' },
   );
-  const pick = await vscode.window.showQuickPick(picks, { title: '管理模型', placeHolder: '选一个模型' });
+  const pick = await vscode.window.showQuickPick(picks, { title: 'Manage models', placeHolder: 'Pick a model' });
   if (!pick?.id) return;
   if (pick.id === '__add__') return addProfile(secrets);
   if (pick.id === '__json__') {
@@ -87,44 +87,44 @@ export async function manageProfiles(secrets: vscode.SecretStorage): Promise<str
   const hasKey = !!(await secrets.get(keyName(id)));
   const action = await vscode.window.showQuickPick(
     [
-      { label: '修改 Base URL', description: p.baseUrl, a: 'url' },
-      { label: hasKey ? '更换 API Key' : '设置 API Key', description: hasKey ? '已保存在钥匙串' : '未设置', a: 'key' },
-      { label: '修改模型名', description: p.model || '（服务商默认映射）', a: 'model' },
-      { label: '重命名', description: name, a: 'label' },
-      { label: '删除', a: 'delete' },
+      { label: 'Change base URL', description: p.baseUrl, a: 'url' },
+      { label: hasKey ? 'Replace API key' : 'Set API key', description: hasKey ? 'Saved in the keychain' : 'Not set', a: 'key' },
+      { label: 'Change model name', description: p.model || '(provider default mapping)', a: 'model' },
+      { label: 'Rename', description: name, a: 'label' },
+      { label: 'Delete', a: 'delete' },
     ],
-    { title: `管理「${name}」` },
+    { title: `Manage "${name}"` },
   );
   if (!action) return;
 
   switch (action.a) {
     case 'url': {
-      const v = await ask(`「${name}」Base URL`, BASE_URL_PROMPT, { value: p.baseUrl, validateInput: urlCheck });
+      const v = await ask(`"${name}" base URL`, BASE_URL_PROMPT, { value: p.baseUrl, validateInput: urlCheck });
       if (v === undefined) return;
       p.baseUrl = v.trim();
       break;
     }
     case 'key': {
-      const v = await ask(`「${name}」API Key`, '存进系统钥匙串，不写进设置文件', { password: true, validateInput: required });
+      const v = await ask(`"${name}" API key`, 'Stored in the system keychain, never in settings', { password: true, validateInput: required });
       if (v !== undefined) await secrets.store(keyName(id), v.trim());
       return;
     }
     case 'model': {
-      const v = await ask(`「${name}」模型名`, '留空则用服务商的默认映射', { value: p.model ?? '' });
+      const v = await ask(`"${name}" model name`, 'Leave empty to use the provider default mapping', { value: p.model ?? '' });
       if (v === undefined) return;
       if (v.trim()) p.model = v.trim();
       else delete p.model;
       break;
     }
     case 'label': {
-      const v = await ask('重命名', '显示名称', { value: name, validateInput: required });
+      const v = await ask('Rename', 'Display name', { value: name, validateInput: required });
       if (v === undefined) return;
       p.label = v.trim();
       break;
     }
     case 'delete': {
-      const ok = await vscode.window.showWarningMessage(`删除「${name}」和它的 API Key？`, { modal: true }, '删除');
-      if (ok !== '删除') return;
+      const ok = await vscode.window.showWarningMessage(`Delete "${name}" and its API key?`, { modal: true }, 'Delete');
+      if (ok !== 'Delete') return;
       await secrets.delete(keyName(id));
       await writeGlobal(list.filter(x => x !== p));
       return;

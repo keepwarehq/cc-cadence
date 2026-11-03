@@ -25,7 +25,7 @@ export interface TurnHandle {
   done: Promise<TurnExit>;
 }
 
-/** 跑一轮 `claude -p`：消息走 stdin，事件从 stdout 按行读 stream-json；多轮靠 --resume 接上 */
+/** Run one `claude -p` round: the message goes to stdin, events are read line-by-line from stdout as stream-json; rounds chain via --resume */
 export function runTurn(o: TurnOptions): TurnHandle {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
                 '--permission-mode', o.permissionMode];
@@ -43,7 +43,7 @@ export function runTurn(o: TurnOptions): TurnHandle {
 
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (s: string) => { stderr = (stderr + s).slice(-8000); });
-  child.stdin.on('error', () => {}); // 进程提前退出时写 stdin 会 EPIPE
+  child.stdin.on('error', () => {}); // writing stdin after an early exit raises EPIPE
   child.stdin.end(o.prompt);
 
   readline.createInterface({ input: child.stdout }).on('line', line => {

@@ -1,7 +1,7 @@
 {
   "name": "ccprofile",
   "displayName": "ccprofile",
-  "description": "在 Claude（Max 订阅，经本机 claude CLI）和其他模型之间切换的聊天面板",
+  "description": "A chat panel that switches between Claude (Max subscription via the local claude CLI) and other models",
   "version": "0.0.1",
   "publisher": "local",
   "private": true,
@@ -27,7 +27,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "默认 bypassPermissions，会直接执行命令，只在受信任的工作区启用。"
+      "description": "Defaults to bypassPermissions and executes commands directly; only enable in trusted workspaces."
     },
     "virtualWorkspaces": false
   },
@@ -46,41 +46,41 @@
         {
           "type": "webview",
           "id": "ccprofile.chat",
-          "name": "对话"
+          "name": "Chat"
         }
       ]
     },
     "commands": [
       {
         "command": "ccprofile.newChat",
-        "title": "新对话",
+        "title": "New Chat",
         "category": "ccprofile",
         "icon": "$(add)"
       },
       {
         "command": "ccprofile.stop",
-        "title": "停止",
+        "title": "Stop",
         "category": "ccprofile"
       },
       {
         "command": "ccprofile.switchProfile",
-        "title": "切换模型",
+        "title": "Switch Model",
         "category": "ccprofile"
       },
       {
         "command": "ccprofile.addProfile",
-        "title": "添加模型（Base URL + API Key）",
+        "title": "Add Model (Base URL + API Key)",
         "category": "ccprofile"
       },
       {
         "command": "ccprofile.manageProfiles",
-        "title": "管理模型",
+        "title": "Manage Models",
         "category": "ccprofile",
         "icon": "$(gear)"
       },
       {
         "command": "ccprofile.doctor",
-        "title": "自检",
+        "title": "Doctor",
         "category": "ccprofile"
       }
     ],
@@ -109,7 +109,7 @@
         "ccprofile.claudePath": {
           "type": "string",
           "default": "~/.local/bin/claude",
-          "description": "本机 claude CLI 的路径。从 Dock 启动的 VS Code 往往没有 ~/.local/bin 在 PATH 里，所以用绝对路径。"
+          "description": "Path to the local claude CLI. VS Code launched from the Dock often lacks ~/.local/bin in PATH, so use an absolute path."
         },
         "ccprofile.defaultPermissionMode": {
           "type": "string",
@@ -122,12 +122,12 @@
             "dontAsk",
             "auto"
           ],
-          "description": "每个窗口打开时的权限模式（对应 claude --permission-mode）。面板里可以临时切换。"
+          "description": "Permission mode each window opens with (maps to claude --permission-mode). Can be switched temporarily in the panel."
         },
         "ccprofile.profiles": {
           "type": "array",
           "default": [],
-          "markdownDescription": "其他模型档位。一般用面板里的「＋ 添加模型…」来加；API Key 存在系统钥匙串，不在这里。内置的 `claude` 档（本机 `claude -p` + Max 订阅）不用写。",
+          "markdownDescription": "Other model profiles. Usually added via \"＋ Add model…\" in the panel; API keys live in the system keychain, not here. The built-in `claude` profile (local `claude -p` + Max subscription) needs no entry.",
           "items": {
             "type": "object",
             "required": [
@@ -136,19 +136,19 @@
             "properties": {
               "id": {
                 "type": "string",
-                "description": "唯一 id；API Key 按它存进钥匙串。写 claude 可以覆盖内置 Claude 档（比如指定 model）。"
+                "description": "Unique id; the API key is stored in the keychain under it. Enter claude to override the built-in Claude profile (e.g. to pin a model)."
               },
               "label": {
                 "type": "string",
-                "description": "显示名称"
+                "description": "Display name"
               },
               "baseUrl": {
                 "type": "string",
-                "description": "服务商的 Anthropic 兼容地址。不填就是 Claude 档：用本机 claude 的 /login 订阅。"
+                "description": "Anthropic-compatible endpoint of the provider. Leave empty for the Claude profile: uses the local claude /login subscription."
               },
               "model": {
                 "type": "string",
-                "description": "传给 claude --model；第三方档同时映射 opus / sonnet / haiku 三个别名。"
+                "description": "Passed to claude --model; third-party profiles also map the opus / sonnet / haiku aliases to it."
               },
               "authEnv": {
                 "type": "string",
@@ -157,11 +157,11 @@
                   "ANTHROPIC_API_KEY"
                 ],
                 "default": "ANTHROPIC_AUTH_TOKEN",
-                "description": "API Key 放进哪个环境变量（AUTH_TOKEN 以 Bearer 头发送，API_KEY 以 X-Api-Key 头发送）。"
+                "description": "Which environment variable carries the API key (AUTH_TOKEN sends a Bearer header, API_KEY sends X-Api-Key)."
               },
               "models": {
                 "type": "object",
-                "description": "按别名分别指定模型，优先于 model。",
+                "description": "Per-alias model names; takes priority over model.",
                 "properties": {
                   "opus": {
                     "type": "string"
@@ -171,7 +171,7 @@
                   },
                   "haiku": {
                     "type": "string",
-                    "description": "后台任务（会话标题等）也用它。"
+                    "description": "Also used for background tasks (session titles etc.)."
                   }
                 }
               },
@@ -180,7 +180,7 @@
                 "additionalProperties": {
                   "type": "string"
                 },
-                "description": "额外传给 claude 的环境变量。"
+                "description": "Extra environment variables passed to claude."
               }
             }
           }

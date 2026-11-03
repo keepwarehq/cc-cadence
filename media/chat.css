@@ -51,7 +51,7 @@ select {
 }
 
 #log:empty::before {
-  content: '选好模型，开始对话。';
+  content: 'Pick a model and start chatting.';
   display: block;
   margin-top: 12px;
   color: var(--vscode-descriptionForeground);

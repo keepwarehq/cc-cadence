@@ -27,7 +27,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const saved = ctx.workspaceState.get<{ sessionId?: string; items?: Item[] }>(CHAT_KEY);
     this.sessionId = saved?.sessionId;
     this.transcript.items = saved?.items ?? [];
-    // 权限模式不跨窗口记忆：每个窗口都从设置里的默认值（bypassPermissions）开始
+    // The permission mode is not remembered across windows: every window starts from the setting default (bypassPermissions)
     this.mode = vscode.workspace.getConfiguration('ccprofile').get<PermissionMode>('defaultPermissionMode') ?? 'bypassPermissions';
     this.statusBar.command = 'ccprofile.switchProfile';
     this.statusBar.show();
@@ -61,13 +61,13 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const text = raw.trim();
     if (!text || this.running) return;
     const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder || folder.uri.scheme !== 'file') return this.notice('error', '先打开一个本地文件夹再对话（不会退回到 $HOME 里跑）。');
+    if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
 
     const profile = this.activeProfile();
     let key: string | undefined;
     if (isThirdParty(profile)) {
       key = await this.ctx.secrets.get(keyName(profile.id));
-      if (!key) return this.notice('error', `「${profile.label}」还没有 API Key：在档位下拉框里选「管理模型…」设置。`);
+      if (!key) return this.notice('error', `"${profile.label}" has no API key yet: set one via "Manage models…" in the profile dropdown.`);
     }
     const claudePath = expandHome(vscode.workspace.getConfiguration('ccprofile').get<string>('claudePath') || '~/.local/bin/claude');
     const mode = this.mode;
@@ -80,10 +80,10 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         if (isThirdParty(profile)) {
           this.status.auth = hostOf(profile.baseUrl!);
         } else if (e.apiKeySource === 'none') {
-          this.status.auth = 'Max 订阅';
+          this.status.auth = 'Max subscription';
         } else {
           this.status.auth = `⚠ ${e.apiKeySource}`;
-          this.notice('warn', `Claude 档这一轮的认证来源是 ${e.apiKeySource}，不是 Max 订阅。运行「ccprofile: 自检」查原因。`);
+          this.notice('warn', `This turn of the Claude profile authenticated via ${e.apiKeySource}, not the Max subscription. Run "ccprofile: Doctor" to find out why.`);
         }
         this.pushStatus();
       },
@@ -91,8 +91,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       result: e => {
         if (e.is_error || e.subtype !== 'success') this.notice('error', resultError(e));
         const denied = [...new Set((e.permission_denials ?? []).map((d: any) => d?.tool_name).filter(Boolean))];
-        if (denied.length) this.notice('warn', `被拒绝的工具调用：${denied.join(', ')}（权限模式 ${mode}）`);
-        this.status.last = `${((e.duration_ms ?? 0) / 1000).toFixed(1)}s · ${e.num_turns ?? '?'} 轮`;
+        if (denied.length) this.notice('warn', `Denied tool calls: ${denied.join(', ')} (permission mode ${mode})`);
+        this.status.last = `${((e.duration_ms ?? 0) / 1000).toFixed(1)}s · ${e.num_turns ?? '?'} turns`;
         this.pushStatus();
       },
     });
@@ -113,19 +113,19 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const exit = await this.running.done;
     this.running = undefined;
     this.setBusy(false);
-    if (this.turn !== turn) return; // 跑的时候点了「新对话」，这一轮的结果不要了
+    if (this.turn !== turn) return; // "New chat" was pressed while running; drop this turn's results
     this.turn = undefined;
 
-    turn.finish(this.stopping ? '已中断' : '未完成');
+    turn.finish(this.stopping ? 'Interrupted' : 'Incomplete');
     if (turn.sessionId) this.sessionId = turn.sessionId;
     if (exit.spawnError) {
-      this.notice('error', `启动 claude 失败（${claudePath}）：${exit.spawnError.message}\n在设置 ccprofile.claudePath 里改路径。`);
+      this.notice('error', `Failed to start claude (${claudePath}): ${exit.spawnError.message}\nChange the path in the ccprofile.claudePath setting.`);
     } else if (this.stopping) {
-      this.notice('info', '已停止。');
+      this.notice('info', 'Stopped.');
     } else if (!turn.gotResult) {
       const tail = exit.stderr.trim().slice(-1500);
-      const hint = resumed ? '\n如果是续接会话失败，点「新对话」重新开始。' : '';
-      this.notice('error', `claude 异常退出（${exit.signal ?? `code ${exit.code}`}）${tail ? '\n' + tail : ''}${hint}`);
+      const hint = resumed ? '\nIf resuming the session failed, press "New chat" to start over.' : '';
+      this.notice('error', `claude exited abnormally (${exit.signal ?? `code ${exit.code}`})${tail ? '\n' + tail : ''}${hint}`);
     }
     void this.save();
   }
@@ -152,14 +152,14 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     if (id === prev.id || !this.profiles().some(p => p.id === id)) return;
     await this.ctx.globalState.update(ACTIVE_KEY, id);
     const next = this.activeProfile();
-    // 同供应商之间 resume 没问题；跨供应商会因 thinking block signature 不兼容而 400，只能开新会话
+    // Resuming within the same vendor is fine; across vendors the thinking block signature mismatches and 400s — only a new session works
     const compatible = isThirdParty(prev) === isThirdParty(next)
       && (!isThirdParty(prev) || prev.baseUrl === next.baseUrl);
     this.sessionId = compatible ? this.sessionId : undefined;
     if (this.transcript.items.length) {
       this.notice('info', compatible
-        ? `已切换到「${next.label}」，下一条消息接着当前会话。`
-        : `已切换到「${next.label}」，跨供应商会话不兼容，下一条消息将开始新会话。`);
+        ? `Switched to "${next.label}"; the next message continues the current session.`
+        : `Switched to "${next.label}"; sessions are not compatible across vendors, so the next message starts a new session.`);
     }
     this.refresh();
   }
@@ -169,15 +169,15 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     type Pick = vscode.QuickPickItem & { id?: string };
     const picks: Pick[] = this.profiles().map(p => ({
       label: `${p.id === current ? '$(check) ' : ''}${p.label}`,
-      description: isThirdParty(p) ? p.baseUrl : '本机 claude -p · Max 订阅',
+      description: isThirdParty(p) ? p.baseUrl : 'local claude -p · Max subscription',
       id: p.id,
     }));
     picks.push(
       { label: '', kind: vscode.QuickPickItemKind.Separator },
-      { label: '$(add) 添加模型…', id: '__add__' },
-      { label: '$(gear) 管理模型…', id: '__manage__' },
+      { label: '$(add) Add model…', id: '__add__' },
+      { label: '$(gear) Manage models…', id: '__manage__' },
     );
-    const pick = await vscode.window.showQuickPick(picks, { title: '切换模型' });
+    const pick = await vscode.window.showQuickPick(picks, { title: 'Switch model' });
     if (pick?.id === '__add__') await this.addProfile();
     else if (pick?.id === '__manage__') await this.manageProfiles();
     else if (pick?.id) await this.setProfile(pick.id);
@@ -220,7 +220,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const p = this.activeProfile();
     const bypass = this.mode === 'bypassPermissions';
     this.statusBar.text = `${this.running ? '$(sync~spin)' : '$(arrow-swap)'} ${p.label}${bypass ? ' $(unlock)' : ''}`;
-    this.statusBar.tooltip = `ccprofile · ${p.label}（${isThirdParty(p) ? p.baseUrl : '本机 claude -p，Max 订阅'}）\n权限模式：${this.mode}\n点击切换模型`;
+    this.statusBar.tooltip = `ccprofile · ${p.label} (${isThirdParty(p) ? p.baseUrl : 'local claude -p, Max subscription'})\nPermission mode: ${this.mode}\nClick to switch model`;
     this.sendState();
   }
 
@@ -267,7 +267,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const uri = (...p: string[]) => webview.asWebviewUri(vscode.Uri.joinPath(media, ...p));
     const nonce = randomBytes(16).toString('base64');
     return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; script-src 'nonce-${nonce}';">
@@ -276,16 +276,16 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 </head>
 <body>
 <header id="bar">
-  <select id="profile" title="模型"></select>
-  <select id="mode" title="权限模式"></select>
-  <span id="badge" class="badge" title="所有工具调用都不再询问" hidden>bypass</span>
+  <select id="profile" title="Model"></select>
+  <select id="mode" title="Permission mode"></select>
+  <span id="badge" class="badge" title="Tool calls never ask for permission" hidden>bypass</span>
 </header>
 <main id="log"></main>
 <footer>
   <div id="status"></div>
   <div class="composer">
-    <textarea id="input" rows="3" placeholder="Enter 发送，Shift+Enter 换行"></textarea>
-    <button id="send">发送</button>
+    <textarea id="input" rows="3" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
+    <button id="send">Send</button>
   </div>
 </footer>
 <script nonce="${nonce}" src="${uri('vendor', 'marked.min.js')}"></script>
@@ -302,10 +302,10 @@ function hostOf(url: string): string {
 
 function rateText(info: any): string {
   if (!info || info.status === 'allowed') return '';
-  const reset = typeof info.resetsAt === 'number' ? `，${new Date(info.resetsAt * 1000).toLocaleString()} 重置` : '';
-  return `额度 ${info.status}${reset}`;
+  const reset = typeof info.resetsAt === 'number' ? `, resets ${new Date(info.resetsAt * 1000).toLocaleString()}` : '';
+  return `quota ${info.status}${reset}`;
 }
 
 function resultError(e: any): string {
-  return String(e.result || (Array.isArray(e.errors) && e.errors.join('\n')) || e.subtype || '出错了');
+  return String(e.result || (Array.isArray(e.errors) && e.errors.join('\n')) || e.subtype || 'Something went wrong');
 }
