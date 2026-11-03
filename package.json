@@ -1,8 +1,8 @@
 {
   "name": "ccprofile",
-  "displayName": "ccprofile",
-  "description": "A chat panel that switches between Claude (Max subscription via the local claude CLI) and other models",
-  "version": "0.0.8",
+  "displayName": "CC Cadence",
+  "description": "Chat in your editor with Claude (Max subscription via the local claude CLI) and any Anthropic-compatible model — switch models, keep the cadence.",
+  "version": "0.0.9",
   "publisher": "local",
   "private": true,
   "license": "UNLICENSED",
@@ -36,7 +36,7 @@
       "activitybar": [
         {
           "id": "ccprofile",
-          "title": "ccprofile",
+          "title": "CC Cadence",
           "icon": "media/icon.svg"
         }
       ]
@@ -54,46 +54,46 @@
       {
         "command": "ccprofile.newChat",
         "title": "New Chat",
-        "category": "ccprofile",
+        "category": "CC Cadence",
         "icon": "$(add)"
       },
       {
         "command": "ccprofile.stop",
         "title": "Stop",
-        "category": "ccprofile"
+        "category": "CC Cadence"
       },
       {
         "command": "ccprofile.switchProfile",
         "title": "Switch Model",
-        "category": "ccprofile"
+        "category": "CC Cadence"
       },
       {
         "command": "ccprofile.addProfile",
         "title": "Add Model (Base URL + API Key)",
-        "category": "ccprofile"
+        "category": "CC Cadence"
       },
       {
         "command": "ccprofile.manageProfiles",
         "title": "Manage Models",
-        "category": "ccprofile",
+        "category": "CC Cadence",
         "icon": "$(gear)"
       },
       {
         "command": "ccprofile.doctor",
         "title": "Doctor",
-        "category": "ccprofile"
+        "category": "CC Cadence"
       },
       {
         "command": "ccprofile.history",
         "title": "Session History",
-        "category": "ccprofile",
+        "category": "CC Cadence",
         "icon": "$(history)"
       },
       {
         "command": "ccprofile.open",
-        "title": "Open ccprofile",
-        "category": "ccprofile",
-        "icon": "media/icon.svg"
+        "title": "Open CC Cadence in Editor",
+        "category": "CC Cadence",
+        "icon": "media/logo.svg"
       }
     ],
     "menus": {
@@ -127,7 +127,7 @@
       ]
     },
     "configuration": {
-      "title": "ccprofile",
+      "title": "CC Cadence",
       "properties": {
         "ccprofile.claudePath": {
           "type": "string",
@@ -233,5 +233,6 @@
     "jsdom": "^26.1.0",
     "marked": "^15.0.12",
     "typescript": "~5.9"
-  }
+  },
+  "icon": "media/logo.png"
 }

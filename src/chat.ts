@@ -36,6 +36,9 @@ interface MentionItem { label: string; path: string; kind: 'file' | 'folder' }
 
 export class ChatController implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
+  private editorPanel?: vscode.WebviewPanel;
+  /** Every live webview (sidebar view + editor panel); messages broadcast to all so both stay in sync */
+  private readonly webviews = new Set<vscode.Webview>();
   private readonly transcript = new Transcript(op => this.post({ type: 'op', ...op }));
   private sessionId?: string;
   private running?: TurnHandle;
@@ -108,7 +111,31 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     view.webview.options = { enableScripts: true, localResourceRoots: [media] };
     view.webview.html = this.html(view.webview, media);
     view.webview.onDidReceiveMessage(m => this.onMessage(m), undefined, this.disposables);
-    view.onDidDispose(() => { if (this.view === view) this.view = undefined; });
+    this.webviews.add(view.webview);
+    view.onDidDispose(() => {
+      this.webviews.delete(view.webview);
+      if (this.view === view) this.view = undefined;
+    });
+  }
+
+  /** Open (or reveal) the chat as a tab in the editor area — its tab shows the colored logo via iconPath */
+  openEditorPanel(): void {
+    if (this.editorPanel) { this.editorPanel.reveal(); return; }
+    const media = vscode.Uri.joinPath(this.ctx.extensionUri, 'media');
+    const panel = vscode.window.createWebviewPanel('ccprofile.editor', 'CC Cadence', vscode.ViewColumn.Active, {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [media],
+    });
+    panel.iconPath = vscode.Uri.joinPath(media, 'logo.svg');
+    panel.webview.html = this.html(panel.webview, media);
+    panel.webview.onDidReceiveMessage(m => this.onMessage(m), undefined, this.disposables);
+    this.editorPanel = panel;
+    this.webviews.add(panel.webview);
+    panel.onDidDispose(() => {
+      this.webviews.delete(panel.webview);
+      if (this.editorPanel === panel) this.editorPanel = undefined;
+    });
   }
 
   async send(raw: string): Promise<void> {
@@ -153,7 +180,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
             this.status.auth = 'Max subscription';
           } else {
             this.status.auth = `⚠ ${e.apiKeySource}`;
-            this.notice('warn', `This turn of the Claude profile authenticated via ${e.apiKeySource}, not the Max subscription. Run "ccprofile: Doctor" to find out why.`);
+            this.notice('warn', `This turn of the Claude profile authenticated via ${e.apiKeySource}, not the Max subscription. Run "CC Cadence: Doctor" to find out why.`);
           }
           this.pushStatus();
         },
@@ -424,13 +451,13 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 
   /** Title-bar history button: send the session list; the panel shows it as a dropdown at the top right */
   async history(): Promise<void> {
-    if (!this.view) {
-      // the panel has never been opened in this window: open it and answer once its webview reports ready
+    if (!this.webviews.size) {
+      // no panel open in this window yet: open the sidebar and answer once its webview reports ready
       this.historyPending = true;
       await vscode.commands.executeCommand('ccprofile.chat.focus');
       return;
     }
-    this.view.show?.(true);
+    this.view?.show?.(true);
     await this.postSessions();
   }
 
@@ -471,6 +498,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.turn?.detach();
     this.running?.stop();
     void this.settings?.dispose();
+    this.editorPanel?.dispose();
     this.disposables.forEach(d => d.dispose());
   }
 
@@ -559,7 +587,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   }
 
   private post(msg: unknown): void {
-    void this.view?.webview.postMessage(msg);
+    for (const wv of this.webviews) void wv.postMessage(msg);
   }
 
   private save(): Thenable<void> {

@@ -72,8 +72,8 @@ export async function runDoctor(secrets: vscode.SecretStorage): Promise<void> {
   info('Whether the Claude profile really uses the Max subscription: check the status line after each turn says "Max subscription"');
 
   channel.clear();
-  channel.appendLine(`ccprofile doctor ${new Date().toLocaleString()}`);
+  channel.appendLine(`CC Cadence doctor ${new Date().toLocaleString()}`);
   for (const l of lines) channel.appendLine(l);
   channel.show(true);
-  void vscode.window.showInformationMessage(problems ? `ccprofile doctor: ${problems} problem(s), see the output panel` : 'ccprofile doctor: no problems found');
+  void vscode.window.showInformationMessage(problems ? `CC Cadence doctor: ${problems} problem(s), see the output panel` : 'CC Cadence doctor: no problems found');
 }

@@ -1,6 +1,6 @@
-# ccprofile
+# CC Cadence
 
-A personal VS Code extension: one chat panel that switches between Claude (Max subscription) and your own model profiles, driven by the local `claude` CLI.
+A personal VS Code extension: chat in your editor with Claude (Max subscription) and any Anthropic-compatible model — switch models, keep the cadence. Driven by the local `claude` CLI.
 
 ## Features
 
@@ -17,12 +17,12 @@ A personal VS Code extension: one chat panel that switches between Claude (Max s
 ## Getting started
 
 1. Log in once: run `claude` in a terminal and `/login` with your Max account.
-2. Click the ccprofile icon in the activity bar to open the Chat panel.
+2. Click the CC Cadence icon in the activity bar to open the Chat panel, or use the editor-title button / "CC Cadence: Open CC Cadence in Editor" to open it as an editor tab (its tab shows the colored logo).
 3. Type and press Enter to send (Shift+Enter for a newline). Enter during IME composition never sends.
 4. Switch models with the pill at the bottom of the composer: pick the provider, its model (Claude: Default / Opus / Sonnet / Haiku / Fable; other profiles: the aliases mapped in `models`) and the effort level (`--effort` low … max). The pill shows the choice, e.g. `Claude (Max) · fable · high effort`. The same vendor resumes the session; switching vendors starts a new session.
 5. Switch the permission mode with the pill next to it (e.g. `plan` for read-only).
 
-If a switch doesn't seem to take effect, run `ccprofile: Doctor` from the command palette.
+If a switch doesn't seem to take effect, run `CC Cadence: Doctor` from the command palette.
 
 ## Adding a model profile
 
