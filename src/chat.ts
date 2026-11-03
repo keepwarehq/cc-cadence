@@ -22,6 +22,7 @@ interface PendingAttachment {
   kind: 'image' | 'file';
   mediaType?: string;
   base64?: string;
+  thumb?: string;
   byteLength?: number;
   uri?: vscode.Uri;
 }
@@ -224,7 +225,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         if (st.size > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
         const bytes = await vscode.workspace.fs.readFile(uri);
         const base64 = Buffer.from(bytes).toString('base64');
-        this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaTypeOf(name), base64, byteLength: st.size });
+        this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaTypeOf(name), base64, thumb: `data:${mediaTypeOf(name)};base64,${base64}`, byteLength: st.size });
       } else {
         this.pending.push({ id: nextAttachmentId(), name, kind: 'file', uri, byteLength: st.size });
       }
@@ -239,7 +240,8 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const image = mediaType ? validateImage(byteLength, mediaType) : isImageName(name);
     if (image) {
       if (byteLength > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
-      this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaType ?? mediaTypeOf(name), base64 });
+      const mt = mediaType ?? mediaTypeOf(name);
+      this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mt, base64, thumb: `data:${mt};base64,${base64}` });
     } else {
       this.pending.push({ id: nextAttachmentId(), name, kind: 'file', base64, byteLength });
     }
@@ -413,6 +415,16 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
         this.pending = this.pending.filter(a => a.id !== m.id);
         this.sendState();
         break;
+      case 'attachUri':
+        if (typeof m.uri === 'string') void this.addUriAttachment(vscode.Uri.parse(m.uri)).then(() => this.sendState());
+        break;
+      case 'pickProfile': void this.pickProfile(); break;
+      case 'cycleMode': {
+        const at = PERMISSION_MODES.indexOf(this.mode);
+        this.mode = PERMISSION_MODES[(at + 1) % PERMISSION_MODES.length];
+        this.refresh();
+        break;
+      }
       case 'mentionQuery': if (typeof m.queryId === 'string' && typeof m.text === 'string') void this.mention(m.queryId, m.text); break;
       case 'checkTasks': void this.send('Check your background tasks and continue.'); break;
     }
@@ -435,7 +447,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       modes: PERMISSION_MODES,
       busy: !!this.running,
       items: this.transcript.items,
-      attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType })),
+      attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType, thumb: a.thumb })),
       status: this.statusText(),
     });
   }
@@ -478,18 +490,23 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 <link rel="stylesheet" href="${uri('chat.css')}">
 </head>
 <body>
-<header id="bar">
-  <select id="profile" title="Model"></select>
-  <select id="mode" title="Permission mode"></select>
-  <span id="badge" class="badge" title="Tool calls never ask for permission" hidden>bypass</span>
-  <button id="history" class="ghost" title="History">🕘</button>
-</header>
 <main id="log"></main>
 <footer>
+  <div id="mention-popup" hidden></div>
   <div id="status"></div>
-  <div class="composer">
+  <div id="chips"></div>
+  <div class="composer" id="composer">
     <textarea id="input" rows="3" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
-    <button id="send">Send</button>
+    <div class="toolbar">
+      <button id="attach" class="ghost" title="Attach files">＋</button>
+      <button id="mention" class="ghost" title="Mention a file (@)">@</button>
+      <button id="history" class="ghost" title="History">🕘</button>
+      <button id="profile" class="pill" title="Switch model"></button>
+      <button id="mode" class="pill" title="Permission mode"></button>
+      <span class="spacer"></span>
+      <button id="stop" class="ghost" title="Stop" hidden>⏹</button>
+      <button id="send">Send</button>
+    </div>
   </div>
 </footer>
 <script nonce="${nonce}" src="${uri('vendor', 'marked.min.js')}"></script>
