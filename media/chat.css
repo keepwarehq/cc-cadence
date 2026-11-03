@@ -1,0 +1,224 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+#bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+select {
+  min-width: 0;
+  max-width: 48%;
+  padding: 2px 4px;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  border-radius: 2px;
+}
+
+.badge {
+  font-size: 0.75em;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+.badge[hidden] {
+  display: none;
+}
+
+#log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px;
+}
+
+#log:empty::before {
+  content: '选好模型，开始对话。';
+  display: block;
+  margin-top: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.item {
+  margin: 8px 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.item.user {
+  padding: 6px 8px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+}
+
+.item.user .tag {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.item.user .body {
+  white-space: pre-wrap;
+}
+
+.item.assistant > :first-child { margin-top: 0; }
+.item.assistant > :last-child { margin-bottom: 0; }
+
+.item.assistant pre {
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+}
+
+.item.assistant code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.95em;
+}
+
+.item.assistant a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.item summary {
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+}
+
+.item.thinking .text {
+  padding: 4px 0 0 12px;
+  white-space: pre-wrap;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.item.tool {
+  padding-left: 8px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+  border-left: 2px solid var(--vscode-charts-blue);
+}
+
+.item.tool.ok { border-left-color: var(--vscode-charts-green); }
+.item.tool.error { border-left-color: var(--vscode-charts-red); }
+
+.item.tool summary {
+  display: flex;
+  gap: 6px;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.item.tool summary::-webkit-details-marker { display: none; }
+
+.item.tool .name {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.item.tool .summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item.tool pre {
+  max-height: 300px;
+  margin: 4px 0 0;
+  padding: 6px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: var(--vscode-textCodeBlock-background);
+}
+
+.item.notice {
+  padding: 4px 8px;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  border-radius: 3px;
+}
+
+.item.notice.info { color: var(--vscode-descriptionForeground); }
+
+.item.notice.warn {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+.item.notice.error {
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+footer {
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--vscode-panel-border, transparent);
+}
+
+#status {
+  min-height: 1.3em;
+  margin-bottom: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.composer {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+textarea {
+  flex: 1;
+  min-height: 3em;
+  max-height: 40vh;
+  padding: 4px 6px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+}
+
+textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+button {
+  padding: 4px 12px;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: 2px;
+}
+
+button:hover { background: var(--vscode-button-hoverBackground); }
+
+button.stop {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
