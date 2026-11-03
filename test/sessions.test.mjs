@@ -57,3 +57,20 @@ test('deleteSession removes the jsonl file', async () => {
   assert.equal(existsSync(d), false);
   rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
 });
+
+test('readTranscript replays array-content user messages (text and image blocks)', async () => {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-w2');
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, 'eeeeeeee-1111-2222-3333-444444444444.jsonl');
+  writeFileSync(f, [
+    JSON.stringify({ type: 'user', uuid: 'u1', isSidechain: false, message: { role: 'user', content: [{ type: 'text', text: 'what is this?' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a1', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text: 'a screenshot' }] } }),
+    '',
+  ].join('\n'), 'utf8');
+  const items = await readTranscript('eeeeeeee-1111-2222-3333-444444444444', '/w2');
+  assert.equal(items[0].kind, 'user');
+  assert.equal(items[0].text.includes('what is this?'), true);
+  assert.equal(items[0].text.includes('image'), true);
+  assert.equal(items[1].text, 'a screenshot');
+  rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+});

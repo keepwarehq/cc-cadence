@@ -30,6 +30,7 @@ export class Transcript {
   }
 
   set(index: number, item: Item): void {
+    if (!this.items[index]) return; // a stale index (chat cleared mid-turn) must not corrupt the new items
     this.items[index] = item;
     this.emit({ op: 'set', index, item });
   }

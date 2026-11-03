@@ -109,6 +109,16 @@ export async function readTranscript(sessionId: string, cwd: string): Promise<It
       if (typeof content === 'string' && content.trim()) {
         items.push({ kind: 'user', text: content });
       } else if (Array.isArray(content)) {
+        // block-array user turns (attachment sends, pasted images): join text parts, note images
+        const texts: string[] = [];
+        let images = 0;
+        for (const b of content as Array<Record<string, unknown>>) {
+          if (b?.type === 'text' && typeof b.text === 'string' && b.text) texts.push(b.text);
+          else if (b?.type === 'image') images++;
+        }
+        if (texts.length || images) {
+          items.push({ kind: 'user', text: texts.join('\n') + (images ? `${texts.length ? '\n' : ''}[${images} image${images === 1 ? '' : 's'} attached]` : '') });
+        }
         for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
           const id: string = b.tool_use_id;

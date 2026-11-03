@@ -7,7 +7,7 @@ import { TurnHandle, runTurn, InputBlock } from './runner';
 import { addProfile, keyName, manageProfiles } from './profileUi';
 import { SessionSummary, deleteSession, listSessions, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
-import { MAX_IMAGE_BYTES, buildBlocks, nextAttachmentId, validateImage } from './attachments';
+import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, nextAttachmentId, stagedName } from './attachments';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
@@ -38,6 +38,9 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   private stopping = false;
   private settings?: SettingsFile;
   private pending: PendingAttachment[] = [];
+  private starting = false;
+  private interrupting?: Promise<void>;
+  private generation = 0;
   private mode: PermissionMode;
   private status: Status = {};
   private readonly statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -79,72 +82,89 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 
   async send(raw: string): Promise<void> {
     const text = raw.trim();
-    if (!text) return;
+    if (!text || this.starting) return;
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
+    this.starting = true;
+    try {
+      // interrupt-and-replace: whatever is running gets stopped, the new message takes over (latest wins)
+      const gen = this.generation;
+      while (this.running) {
+        if (!this.interrupting) this.interrupting = this.interruptRunning().finally(() => { this.interrupting = undefined; });
+        await this.interrupting;
+      }
+      if (gen !== this.generation) return; // New chat was pressed while we waited
 
-    if (this.running) await this.interruptRunning();
+      const profile = this.activeProfile();
+      let key: string | undefined;
+      if (isThirdParty(profile)) {
+        key = await this.ctx.secrets.get(keyName(profile.id));
+        if (!key) return this.notice('error', `"${profile.label}" has no API key yet: set one via "Manage models…" in the profile dropdown.`);
+      }
+      const claudePath = expandHome(vscode.workspace.getConfiguration('ccprofile').get<string>('claudePath') || '~/.local/bin/claude');
+      const cfg = vscode.workspace.getConfiguration('ccprofile');
+      const mode = this.mode;
+      const resumed = !!this.sessionId;
+      const { images, filePaths, names } = await this.materializePending(folder);
+      if (gen !== this.generation) return;
+      this.transcript.push({ kind: 'user', text, profile: profile.label, attachments: names.length ? names : undefined });
+      this.pending = [];
+      void this.sendState();
 
-    const profile = this.activeProfile();
-    let key: string | undefined;
-    if (isThirdParty(profile)) {
-      key = await this.ctx.secrets.get(keyName(profile.id));
-      if (!key) return this.notice('error', `"${profile.label}" has no API key yet: set one via "Manage models…" in the profile dropdown.`);
+      const turn = new TurnTranslator(this.transcript, {
+        init: e => {
+          this.status.model = e.model;
+          if (isThirdParty(profile)) {
+            this.status.auth = hostOf(profile.baseUrl!);
+          } else if (e.apiKeySource === 'none') {
+            this.status.auth = 'Max subscription';
+          } else {
+            this.status.auth = `⚠ ${e.apiKeySource}`;
+            this.notice('warn', `This turn of the Claude profile authenticated via ${e.apiKeySource}, not the Max subscription. Run "ccprofile: Doctor" to find out why.`);
+          }
+          this.pushStatus();
+        },
+        rateLimit: info => { this.status.rate = rateText(info); this.pushStatus(); },
+        result: e => {
+          if (e.is_error || e.subtype !== 'success') this.notice('error', resultError(e));
+          const denied = [...new Set((e.permission_denials ?? []).map((d: any) => d?.tool_name).filter(Boolean))];
+          if (denied.length) this.notice('warn', `Denied tool calls: ${denied.join(', ')} (permission mode ${mode})`);
+          this.status.last = `${((e.duration_ms ?? 0) / 1000).toFixed(1)}s · ${e.num_turns ?? '?'} turns`;
+          this.pushStatus();
+        },
+      });
+
+      const blocks = buildBlocks(text, images, filePaths);
+      this.stopping = false;
+      this.turn = turn;
+      this.settings = await writeSettingsFile(cfg.get<Record<string, unknown>>('claudeSettings'));
+      const handle = runTurn({
+        claudePath,
+        cwd: folder.uri.fsPath,
+        env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
+        message: { text, blocks },
+        permissionMode: mode,
+        sessionId: this.sessionId,
+        model: profile.model,
+        settingsPath: this.settings?.path,
+        onEvent: e => turn.handle(e),
+      });
+      this.running = handle;
+      // the send lock is released here; further sends interrupt-and-replace this turn
+      void this.awaitTurn(handle, turn, mode, resumed, claudePath);
+    } finally {
+      this.starting = false;
     }
-    const claudePath = expandHome(vscode.workspace.getConfiguration('ccprofile').get<string>('claudePath') || '~/.local/bin/claude');
-    const cfg = vscode.workspace.getConfiguration('ccprofile');
-    const mode = this.mode;
-    const resumed = !!this.sessionId;
-    const { images, filePaths, names } = await this.materializePending(folder);
-    this.transcript.push({ kind: 'user', text, profile: profile.label, attachments: names.length ? names : undefined });
-    this.pending = [];
-    void this.sendState();
+  }
 
-    const turn = new TurnTranslator(this.transcript, {
-      init: e => {
-        this.status.model = e.model;
-        if (isThirdParty(profile)) {
-          this.status.auth = hostOf(profile.baseUrl!);
-        } else if (e.apiKeySource === 'none') {
-          this.status.auth = 'Max subscription';
-        } else {
-          this.status.auth = `⚠ ${e.apiKeySource}`;
-          this.notice('warn', `This turn of the Claude profile authenticated via ${e.apiKeySource}, not the Max subscription. Run "ccprofile: Doctor" to find out why.`);
-        }
-        this.pushStatus();
-      },
-      rateLimit: info => { this.status.rate = rateText(info); this.pushStatus(); },
-      result: e => {
-        if (e.is_error || e.subtype !== 'success') this.notice('error', resultError(e));
-        const denied = [...new Set((e.permission_denials ?? []).map((d: any) => d?.tool_name).filter(Boolean))];
-        if (denied.length) this.notice('warn', `Denied tool calls: ${denied.join(', ')} (permission mode ${mode})`);
-        this.status.last = `${((e.duration_ms ?? 0) / 1000).toFixed(1)}s · ${e.num_turns ?? '?'} turns`;
-        this.pushStatus();
-      },
-    });
-
-    const blocks = buildBlocks(text, images, filePaths);
-    this.stopping = false;
-    this.turn = turn;
-    this.settings = await writeSettingsFile(cfg.get<Record<string, unknown>>('claudeSettings'));
-    this.running = runTurn({
-      claudePath,
-      cwd: folder.uri.fsPath,
-      env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
-      message: { text, blocks },
-      permissionMode: mode,
-      sessionId: this.sessionId,
-      model: profile.model,
-      settingsPath: this.settings?.path,
-      onEvent: e => turn.handle(e),
-    });
-    this.setBusy(true);
-    const exit = await this.running.done;
+  /** Post-exit finalization for the turn that is still the controller's live turn */
+  private async awaitTurn(handle: TurnHandle, turn: TurnTranslator, mode: PermissionMode, resumed: boolean, claudePath: string): Promise<void> {
+    const exit = await handle.done;
+    if (this.running !== handle || this.turn !== turn) return; // interrupted or reset: the interrupter/newChat finalizes instead
     this.running = undefined;
     this.setBusy(false);
     void this.settings?.dispose();
     this.settings = undefined;
-    if (this.turn !== turn) return; // "New chat" was pressed while running; drop this turn's results
     this.turn = undefined;
 
     turn.finish(this.stopping ? 'Interrupted' : 'Incomplete');
@@ -172,11 +192,13 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     this.stopping = false;
     handle.stop();
     await handle.done;
+    void this.settings?.dispose();
+    this.settings = undefined;
     prev?.finish('Interrupted');
-    this.turn = undefined;
     if (prev && prev.pendingTasks > 0) {
       this.notice('info', 'Interrupted while background tasks were still running. Check now to collect their results.', 'checkTasks');
     }
+    if (this.turn === prev) this.turn = undefined;
   }
 
   /** Split pending attachments into image blocks and materialized file paths; clears nothing (send clears) */
@@ -188,13 +210,16 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     const images: { mediaType: string; base64: string }[] = [];
     const filePaths: string[] = [];
     const names: { name: string; mediaType: string }[] = [];
+    if (this.pending.some(a => a.kind === 'file')) {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, '.ccprofile', 'attachments'));
+    }
     for (const a of this.pending) {
       if (a.kind === 'image' && a.base64) {
         images.push({ mediaType: a.mediaType ?? 'image/png', base64: a.base64 });
         names.push({ name: a.name, mediaType: a.mediaType ?? 'image/png' });
         continue;
       }
-      const destName = `${Date.now()}-${a.name.replace(/[^\w.-]+/g, '_')}`;
+      const destName = stagedName(a.name, a.id);
       const dest = vscode.Uri.joinPath(folder.uri, '.ccprofile', 'attachments', destName);
       try {
         if (a.uri) await vscode.workspace.fs.copy(a.uri, dest, { overwrite: true });
@@ -221,11 +246,17 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     try {
       const st = await vscode.workspace.fs.stat(uri);
       const name = uri.path.split('/').pop() || 'file';
-      if (isImageName(name)) {
-        if (st.size > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
+      const kind = classifyAttachment(name, undefined, st.size);
+      if (kind === 'reject') {
+        this.notice('error', `"${name}" is over the 5 MB image limit.`);
+        return;
+      }
+      if (kind === 'image') {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const base64 = Buffer.from(bytes).toString('base64');
-        this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mediaTypeOf(name), base64, thumb: `data:${mediaTypeOf(name)};base64,${base64}`, byteLength: st.size });
+        const mt = mediaTypeOf(name);
+        this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mt, base64, thumb: `data:${mt};base64,${base64}`, byteLength: st.size });
+        this.postThumbs();
       } else {
         this.pending.push({ id: nextAttachmentId(), name, kind: 'file', uri, byteLength: st.size });
       }
@@ -234,18 +265,29 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
     }
   }
 
-  /** An image pasted or dropped as raw bytes arrives as base64; a non-image OS drop carries the blob bytes */
-  private addDataAttachment(name: string, mediaType: string | undefined, base64: string): void {
+  /** An image pasted or dropped as raw bytes arrives as base64; a non-image OS drop carries the blob bytes.
+   * cid is the webview-generated attachment id, which also keys the webview's own thumbnail cache. */
+  private addDataAttachment(name: string, mediaType: string | undefined, base64: string, cid?: string): void {
     const byteLength = Math.floor(base64.length * 3 / 4);
-    const image = mediaType ? validateImage(byteLength, mediaType) : isImageName(name);
-    if (image) {
-      if (byteLength > MAX_IMAGE_BYTES) return this.notice('error', `"${name}" is over the 5 MB image limit.`);
+    const kind = classifyAttachment(name, mediaType, byteLength);
+    if (kind === 'reject') {
+      this.notice('error', `"${name}" is over the 5 MB image limit.`);
+      return;
+    }
+    const id = typeof cid === 'string' && cid.length >= 4 ? cid : nextAttachmentId();
+    if (kind === 'image') {
       const mt = mediaType ?? mediaTypeOf(name);
-      this.pending.push({ id: nextAttachmentId(), name, kind: 'image', mediaType: mt, base64, thumb: `data:${mt};base64,${base64}` });
+      this.pending.push({ id, name, kind: 'image', mediaType: mt, base64, thumb: `data:${mt};base64,${base64}` });
     } else {
-      this.pending.push({ id: nextAttachmentId(), name, kind: 'file', base64, byteLength });
+      this.pending.push({ id, name, kind: 'file', base64, byteLength });
     }
     this.sendState();
+  }
+
+  /** One-shot thumbnail delivery: base64 never rides the recurring state messages */
+  private postThumbs(): void {
+    const thumbs = this.pending.filter(a => a.thumb).map(a => ({ id: a.id, thumb: a.thumb! }));
+    if (thumbs.length) this.post({ type: 'thumbs', thumbs });
   }
 
   private async mention(queryId: string, raw: string): Promise<void> {
@@ -276,6 +318,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
   }
 
   newChat(): void {
+    this.generation++;
     this.turn?.detach();
     this.turn = undefined;
     this.stop();
@@ -406,10 +449,10 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       case 'deleteSession': if (typeof m.id === 'string') void this.history(); break;
       case 'attach': void this.attachDialog(); break;
       case 'attachData':
-        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, typeof m.mediaType === 'string' ? m.mediaType : undefined, m.base64);
+        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, typeof m.mediaType === 'string' ? m.mediaType : undefined, m.base64, m.cid);
         break;
       case 'attachFile':
-        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, undefined, m.base64);
+        if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, undefined, m.base64, m.cid);
         break;
       case 'removeAttachment':
         this.pending = this.pending.filter(a => a.id !== m.id);
@@ -447,7 +490,7 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
       modes: PERMISSION_MODES,
       busy: !!this.running,
       items: this.transcript.items,
-      attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType, thumb: a.thumb })),
+      attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType })),
       status: this.statusText(),
     });
   }
@@ -515,10 +558,6 @@ export class ChatController implements vscode.WebviewViewProvider, vscode.Dispos
 </body>
 </html>`;
   }
-}
-
-function isImageName(name: string): boolean {
-  return /\.(png|jpe?g|webp|gif)$/i.test(name);
 }
 
 function mediaTypeOf(name: string): string {

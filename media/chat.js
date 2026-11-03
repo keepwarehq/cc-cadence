@@ -213,9 +213,10 @@
   function renderChips() {
     chips.replaceChildren(...attachments.map(a => {
       const c = el('span', 'chip' + (a.kind === 'image' ? ' img' : ''));
-      if (a.thumb) {
+      const thumb = thumbs.get(a.id);
+      if (thumb) {
         const img = document.createElement('img');
-        img.src = a.thumb;
+        img.src = thumb;
         img.alt = a.name;
         c.appendChild(img);
       }
@@ -267,15 +268,21 @@
 
   // ---- Attachment input: paste and drop ----
 
+  let attachSeq = 0;
+  /** Thumbnails the webview itself produced (paste/drop): keyed by the client id sent with the attachment */
+  const thumbs = new Map();
+
   function fileToAttachment(/** @type {File} */ file, /** @type {(m: any) => void} */ post) {
     const fr = new FileReader();
+    const cid = 'c' + Date.now().toString(36) + (attachSeq++).toString(36);
     fr.onloadend = () => {
       const s = String(fr.result || '');
       const at = s.indexOf('base64,');
       if (at < 0) return;
       const base64 = s.slice(at + 'base64,'.length);
       const image = /^image\//.test(file.type || '');
-      post({ type: image ? 'attachData' : 'attachFile', name: file.name, mediaType: file.type || undefined, base64 });
+      if (image) thumbs.set(cid, s);
+      post({ type: image ? 'attachData' : 'attachFile', cid, name: file.name, mediaType: file.type || undefined, base64 });
     };
     fr.readAsDataURL(file);
   }
@@ -299,10 +306,14 @@
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag');
-    const uriList = typeof e.dataTransfer?.getData === 'function' ? (e.dataTransfer.getData('text/uri-list') || '') : '';
-    const uris = uriList.split('\n').map(s => s.trim()).filter(Boolean);
-    for (const u of uris) vscode.postMessage({ type: 'attachUri', uri: u });
-    for (const f of e.dataTransfer?.files ?? []) fileToAttachment(f, m => vscode.postMessage(m));
+    // OS drags carry both flavors for the same file; prefer files, use uri-list only as the fallback
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (files.length) {
+      for (const f of files) fileToAttachment(f, m => vscode.postMessage(m));
+    } else {
+      const uriList = typeof e.dataTransfer?.getData === 'function' ? (e.dataTransfer.getData('text/uri-list') || '') : '';
+      for (const u of uriList.split('\n').map(s => s.trim()).filter(Boolean)) vscode.postMessage({ type: 'attachUri', uri: u });
+    }
   });
 
   // ---- @ mentions ----
@@ -394,6 +405,10 @@
     else if (m.type === 'op') applyOp(m);
     else if (m.type === 'busy') setBusy(m.busy);
     else if (m.type === 'status') statusEl.textContent = m.text || '';
+    else if (m.type === 'thumbs') {
+      for (const th of m.thumbs || []) thumbs.set(th.id, th.thumb);
+      renderChips();
+    }
     else if (m.type === 'mentionResults') {
       if (String(m.queryId) === String(mentionQueryId)) {
         mentionItems = m.items || [];

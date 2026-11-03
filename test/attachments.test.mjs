@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { MAX_IMAGE_BYTES, buildBlocks, validateImage, nextAttachmentId } = await import('../out/attachments.js');
+const { MAX_IMAGE_BYTES, buildBlocks, validateImage, nextAttachmentId, isImageType, classifyAttachment, stagedName } = await import('../out/attachments.js');
 
 test('buildBlocks puts image blocks first, then one text block with the attached-file list', () => {
   const blocks = buildBlocks('look at this', [{ mediaType: 'image/png', base64: 'aGk=' }], ['docs/spec.md', 'notes.txt']);
@@ -34,4 +34,22 @@ test('nextAttachmentId produces unique ids', () => {
   const b = nextAttachmentId();
   assert.notEqual(a, b);
   assert.ok(a.length > 4);
+});
+
+test('isImageType matches only the four API image types', () => {
+  assert.equal(isImageType('image/png'), true);
+  assert.equal(isImageType('image/svg+xml'), false);
+});
+
+test('classifyAttachment rejects oversized images, accepts image types by name fallback', () => {
+  assert.equal(classifyAttachment('shot.png', 'image/png', 6 * 1024 * 1024), 'reject');
+  assert.equal(classifyAttachment('shot.png', 'image/png', 100), 'image');
+  assert.equal(classifyAttachment('notes.txt', 'text/plain', 100), 'file');
+  assert.equal(classifyAttachment('shot.png', undefined, 100), 'image');
+  assert.equal(classifyAttachment('shot.png', 'image/svg+xml', 100), 'file');
+});
+
+test('stagedName is unique per uid and sanitizes the file name', () => {
+  assert.notEqual(stagedName('config.json', 'u1'), stagedName('config.json', 'u2'));
+  assert.equal(stagedName('my file (1).pdf', 'u1'), 'u1-my_file_1_.pdf');
 });

@@ -211,3 +211,47 @@ test('copy button on code blocks works without inline styles anywhere', async ()
   assert.ok(btn, 'copy button rendered');
   btn.click();
 });
+
+test('drop prefers files over uri-list (no double attach)', async () => {
+  const { window, posted, send, $ } = boot();
+  send(STATE);
+  const input = $('input');
+  const realFR = window.FileReader;
+  window.FileReader = class {
+    constructor() { setTimeout(() => { this.result = 'data:image/png;base64,aGk='; this.onloadend(); }, 0); }
+    readAsDataURL() {}
+  };
+  const file = { name: 'shot.png', type: 'image/png' };
+  const ev = new window.Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(ev, 'dataTransfer', {
+    value: { files: [file], types: ['Files'], getData: () => 'file:///home/u/shot.png' },
+  });
+  input.dispatchEvent(ev);
+  await new Promise(r => setTimeout(r, 5));
+  window.FileReader = realFR;
+  assert.equal(posted.filter(m => m.type === 'attachUri').length, 0, 'no attachUri when files are present');
+  assert.equal(posted.filter(m => m.type === 'attachData' || m.type === 'attachFile').length, 1, 'exactly one attachment');
+});
+
+test('attachData carries a cid and state attachments carry no base64 thumb', async () => {
+  const { window, posted, send, $, frame } = boot();
+  send(STATE);
+  const realFR = window.FileReader;
+  window.FileReader = class {
+    constructor() { setTimeout(() => { this.result = 'data:image/png;base64,aGk='; this.onloadend(); }, 0); }
+    readAsDataURL() {}
+  };
+  const item = { kind: 'file', getAsFile: () => ({ name: 'shot.png', type: 'image/png' }) };
+  const ev = new window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(ev, 'clipboardData', { value: { items: [item] } });
+  $('input').dispatchEvent(ev);
+  await new Promise(r => setTimeout(r, 5));
+  const msg = posted.find(m => m.type === 'attachData');
+  assert.ok(msg?.cid, 'cid present');
+  // the host echoes a state whose attachment entry carries NO thumb; the chip still shows the webview's own thumbnail
+  send({ ...STATE, attachments: [{ id: msg.cid, name: 'shot.png', kind: 'image', mediaType: 'image/png' }] });
+  await frame();
+  const chip = $('chips').querySelector('.chip');
+  assert.ok(chip, 'chip rendered');
+  assert.ok(chip.querySelector('img'), 'thumbnail rendered from the webview cache despite thumbless state');
+});
