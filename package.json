@@ -5,7 +5,7 @@
   "version": "0.0.15",
   "publisher": "local",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -22,7 +22,7 @@
     "watch": "tsc -w -p .",
     "test": "npm run compile && node --test test/*.test.mjs",
     "smoke": "npm run compile && node test/live-smoke.mjs",
-    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --skip-license"
+    "package": "npm run compile && vsce package --no-dependencies"
   },
   "capabilities": {
     "untrustedWorkspaces": {

@@ -4,3 +4,8 @@ media/vendor/
 *.vsix
 sandbox/*
 !sandbox/.gitkeep
+
+# local planning + editor config — never published
+.superpowers/
+.vscode/
+docs/
