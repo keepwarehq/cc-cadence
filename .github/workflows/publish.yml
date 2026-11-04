@@ -1,0 +1,58 @@
+# Release: bump "version" in package.json, add a "## <version> — …" section to CHANGELOG.md, commit,
+# then push a matching tag (git tag v0.0.16 && git push origin v0.0.16).
+#
+# Publishes to the VS Code Marketplace with Trusted Publishing (OIDC, no PAT). The Marketplace policy for
+# publisher "keepware" pins this file name (publish.yml) and the "production" environment — keep both in sync.
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # Marketplace trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Tag must match package.json version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $v"
+            exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Package
+        run: npx vsce package --no-dependencies --out "cc-cadence-$VERSION.vsix"
+
+      - name: Publish to the VS Code Marketplace
+        run: npx vsce publish --oidc --skip-duplicate --packagePath "cc-cadence-$VERSION.vsix"
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # notes = this version's CHANGELOG section; title = its heading
+          awk -v h="## $VERSION " 'index($0, h) == 1 { f = 1; next } /^## / && f { exit } f' CHANGELOG.md > notes.md
+          title=$(grep -m1 "^## $VERSION " CHANGELOG.md | sed 's/^## //')
+          gh release create "$GITHUB_REF_NAME" "cc-cadence-$VERSION.vsix" \
+            --title "CC Cadence ${title:-$VERSION}" --notes-file notes.md --verify-tag
