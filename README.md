@@ -2,6 +2,13 @@
 
 Chat in your editor with Claude (Max subscription) and any Anthropic-compatible model — switch models, keep the cadence. Driven by the local `claude` CLI. Free, forever, by [Keepware](https://www.keepware.dev).
 
+[![Version](https://img.shields.io/visual-studio-marketplace/v/keepware.cc-cadence?label=marketplace)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/keepware.cc-cadence)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
+
+```bash
+code --install-extension keepware.cc-cadence
+```
+
 ## Features
 
 - **Many profiles, one panel** — the built-in Claude profile runs the local `claude -p` on its own `/login` Max subscription. Other profiles point at any Anthropic-compatible endpoint with a Base URL + API key, so every model gets the same tools: read/write files, run commands, subagents.
