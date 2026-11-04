@@ -2,7 +2,7 @@
   "name": "ccprofile",
   "displayName": "CC Cadence",
   "description": "Chat in your editor with Claude (Max subscription via the local claude CLI) and any Anthropic-compatible model — switch models, keep the cadence.",
-  "version": "0.0.11",
+  "version": "0.0.15",
   "publisher": "local",
   "private": true,
   "license": "UNLICENSED",
@@ -94,6 +94,12 @@
         "title": "Open CC Cadence in Editor",
         "category": "CC Cadence",
         "icon": "media/logo.svg"
+      },
+      {
+        "command": "ccprofile.openHistory",
+        "title": "Session History",
+        "category": "CC Cadence",
+        "icon": "$(history)"
       }
     ],
     "menus": {
@@ -120,6 +126,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "ccprofile.openHistory",
+          "when": "activeWebviewPanelId == ccprofile.editor",
+          "group": "navigation@0"
+        },
         {
           "command": "ccprofile.open",
           "group": "navigation@100"
@@ -234,5 +245,9 @@
     "marked": "^15.0.12",
     "typescript": "~5.9"
   },
-  "icon": "media/logo.png"
+  "icon": "media/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keepwarehq/cc-cadence"
+  }
 }

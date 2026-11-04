@@ -105,9 +105,16 @@
         addCopyButtons(node);
         break;
       case 'thinking': {
-        const d = el('details');
-        d.append(el('summary', '', 'Thinking'), el('div', 'text', item.text));
-        node.appendChild(d);
+        if (item.text) {
+          const d = el('details');
+          d.append(el('summary', '', 'Thinking'), el('div', 'text', item.text));
+          node.appendChild(d);
+        } else {
+          // claude -p on the Max subscription redacts the reasoning text, streaming only an estimated token count —
+          // show a compact label instead of an empty, misleading expander
+          const tok = fmtTokens(item.tokens);
+          node.appendChild(el('span', 'thinking-label', tok ? 'Thinking · ~' + tok : 'Thinking…'));
+        }
         break;
       }
       case 'tool': {
@@ -422,6 +429,7 @@
     if (!text) return;
     vscode.postMessage({ type: 'send', text });
     input.value = '';
+    syncHighlight();
     const st = vscode.getState() || {};
     vscode.setState({ ...st, draft: '' });
   }
@@ -515,7 +523,7 @@
     for (const f of [...(fileInput.files ?? [])]) fileToAttachment(f, m => vscode.postMessage(m));
     fileInput.value = '';
   });
-  $('mention').addEventListener('click', () => { insertMention('@'); input.focus(); });
+  $('mention').addEventListener('click', () => startMention());
   // ---- Attachment input: paste and drop ----
 
   let attachSeq = 0;
@@ -600,28 +608,80 @@
       ? mentionItems.map((it, i) => {
           const row = el('div', 'mention-item' + (i === mentionActive ? ' active' : ''));
           row.append(el('span', 'mention-icon', it.kind === 'folder' ? '▸' : '·'), el('span', '', it.label));
+          // mousedown (not click) so the textarea keeps focus and the caret position
+          row.addEventListener('mousedown', e => { e.preventDefault(); pickMention(it); });
           return row;
         })
       : [el('div', 'mention-empty', 'No matches')]));
     popup.hidden = false;
   }
 
-  function insertMention(/** @type {string} */ path) {
-    if (mentionAnchor >= 0) {
-      const end = input.selectionEnd ?? input.value.length;
-      input.value = input.value.slice(0, mentionAnchor) + path + input.value.slice(end);
-    } else {
-      input.value = input.value + (input.value.endsWith(' ') || !input.value ? '' : ' ') + path;
-    }
-    input.focus();
-    closeMention();
+  function saveDraft() {
     const st = vscode.getState() || {};
     vscode.setState({ ...st, draft: input.value });
   }
 
+  /** Replace the `@query` being typed with `@path` (kept, like Claude Code); files get a trailing space, folders stay open for drilling in */
+  function pickMention(/** @type {{path: string, kind: string}} */ it) {
+    if (mentionAnchor < 0) return;
+    const end = input.selectionEnd ?? input.value.length;
+    const token = '@' + it.path + (it.kind === 'folder' ? '' : ' ');
+    const rest = input.value.slice(end).replace(/^\S*/, ''); // drop the rest of a half-typed word after the caret
+    input.value = input.value.slice(0, mentionAnchor) + token + (it.kind === 'folder' ? rest : rest.replace(/^ /, ''));
+    const caret = mentionAnchor + token.length;
+    input.setSelectionRange(caret, caret);
+    input.focus();
+    closeMention();
+    syncHighlight();
+    saveDraft();
+    if (it.kind === 'folder') openMention(mentionAnchorFor(caret), it.path);
+  }
+
+  const mentionAnchorFor = (/** @type {number} */ caret) => input.value.lastIndexOf('@', caret - 1);
+
+  /** Toolbar @ button: start a new mention at the caret and open the picker */
+  function startMention() {
+    const pos = input.selectionEnd ?? input.value.length;
+    const before = input.value.slice(0, pos);
+    const lead = !before || /\s$/.test(before) ? '@' : ' @';
+    input.value = before + lead + input.value.slice(pos);
+    const caret = pos + lead.length;
+    input.setSelectionRange(caret, caret);
+    input.focus();
+    syncHighlight();
+    saveDraft();
+    openMention(caret - 1, '');
+  }
+
+  // ---- Mention highlighting: a mirror layer behind the transparent textarea paints @tokens ----
+
+  const inputWrap = el('div', 'input-wrap');
+  const inputHl = el('div', 'input-hl');
+  inputHl.setAttribute('aria-hidden', 'true');
+  input.parentNode.insertBefore(inputWrap, input);
+  inputWrap.append(inputHl, input);
+
+  function syncHighlight() {
+    const text = input.value;
+    const re = /(^|\s)(@[^\s@]+)/g;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (let m; (m = re.exec(text));) {
+      const start = m.index + m[1].length;
+      frag.append(text.slice(last, start), el('mark', 'mention-token', m[2]));
+      last = start + m[2].length;
+    }
+    // trailing newline needs a placeholder char or the mirror ends one line short
+    frag.append(text.slice(last) + (text.endsWith('\n') ? ' ' : ''));
+    inputHl.replaceChildren(frag);
+    inputHl.scrollTop = input.scrollTop;
+  }
+
+  input.addEventListener('scroll', () => { inputHl.scrollTop = input.scrollTop; });
+
   input.addEventListener('input', () => {
-    const st = vscode.getState() || {};
-    vscode.setState({ ...st, draft: input.value });
+    syncHighlight();
+    saveDraft();
     const m = mentionState();
     if (m) {
       clearTimeout(mentionTimer);
@@ -638,7 +698,7 @@
     if (mentionAnchor >= 0 && mentionItems.length) {
       if (e.key === 'ArrowDown') { mentionActive = (mentionActive + 1) % mentionItems.length; renderMention(); e.preventDefault(); return; }
       if (e.key === 'ArrowUp') { mentionActive = (mentionActive - 1 + mentionItems.length) % mentionItems.length; renderMention(); e.preventDefault(); return; }
-      if (e.key === 'Enter' || e.key === 'Tab') { insertMention(mentionItems[mentionActive].path); e.preventDefault(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { pickMention(mentionItems[mentionActive]); e.preventDefault(); return; }
       if (e.key === 'Escape') { closeMention(); e.preventDefault(); return; }
     }
     // Enter during IME composition picks a candidate; it must not send
@@ -670,5 +730,7 @@
   });
 
   input.value = (vscode.getState() || {}).draft || '';
+  syncHighlight();
+  window.addEventListener('resize', syncHighlight);
   vscode.postMessage({ type: 'ready' });
 })();

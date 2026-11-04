@@ -2,7 +2,11 @@ src/**
 test/**
 scripts/**
 sandbox/**
+videos/**
 node_modules/**
+.superpowers/**
+docs/**
+*.vsix
 .vscode/**
 tsconfig.json
 **/*.map

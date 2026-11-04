@@ -201,3 +201,17 @@ test('task_progress and task_notification capture duration and tokens', () => {
   assert.equal(t.items[0].durationMs, 800000);
   assert.equal(t.items[0].status, 'ok');
 });
+
+test('redacted thinking deltas (empty text) capture the estimated token count', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm1' } } });
+  tr.handle({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } } });
+  tr.handle({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 } } });
+  // a later null estimate must not clobber the captured count
+  tr.handle({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: null } } });
+  assert.equal(t.items.length, 1);
+  assert.equal(t.items[0].kind, 'thinking');
+  assert.equal(t.items[0].text, '');
+  assert.equal(t.items[0].tokens, 50);
+});

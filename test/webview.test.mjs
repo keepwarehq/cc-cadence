@@ -124,6 +124,36 @@ test('replays a real event stream: four items render in order', async () => {
   assert.equal(nodes[4].textContent.trim(), 'The command executed successfully and printed the expected output.');
 });
 
+test('thinking with text renders an expandable details with the reasoning', async () => {
+  const { send, $, frame } = boot();
+  send({ ...STATE, items: [{ kind: 'thinking', text: 'first I consider X' }] });
+  await frame();
+  const node = $('log').children[0];
+  const d = node.querySelector('details');
+  assert.ok(d, 'expandable details rendered');
+  assert.equal(d.querySelector('.text').textContent, 'first I consider X');
+});
+
+test('redacted thinking (empty text) renders a token label, not an empty expander', async () => {
+  const { send, $, frame } = boot();
+  send({ ...STATE, items: [{ kind: 'thinking', text: '', tokens: 1300 }] });
+  await frame();
+  const node = $('log').children[0];
+  assert.equal(node.querySelector('details'), null, 'no misleading empty expander');
+  const label = node.querySelector('.thinking-label');
+  assert.ok(label, 'compact thinking label rendered');
+  assert.match(label.textContent, /Thinking · ~1\.3k tokens/);
+});
+
+test('redacted thinking without a token estimate shows a plain Thinking… label', async () => {
+  const { send, $, frame } = boot();
+  send({ ...STATE, items: [{ kind: 'thinking', text: '' }] });
+  await frame();
+  const node = $('log').children[0];
+  assert.equal(node.querySelector('details'), null);
+  assert.equal(node.querySelector('.thinking-label').textContent, 'Thinking…');
+});
+
 test('scripts and event attributes in model output are stripped', async () => {
   const { send, $ } = boot();
   send({ ...STATE, items: [{ kind: 'assistant', text: 'hi <img src="x" onerror="alert(1)"><script>alert(2)</script> **b**' }] });
@@ -213,8 +243,58 @@ test('typing @ triggers mentionQuery; mentionResults renders the popup; Enter in
   assert.ok(popup, 'popup rendered');
   assert.ok(popup.textContent.includes('src/auth.ts'));
   input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  assert.equal(input.value, 'fix src/auth.ts');
+  assert.equal(input.value, 'fix @src/auth.ts ');
   assert.equal(posted.filter(m => m.type === 'send').length, 0);
+  const marks = [...window.document.querySelectorAll('.input-hl .mention-token')].map(m => m.textContent);
+  assert.deepEqual(marks, ['@src/auth.ts']);
+});
+
+test('picking a mention keeps @, replaces only the typed query, and clicking a row works', async () => {
+  const { window, posted, send, $, frame } = boot();
+  send(STATE);
+  const input = $('input');
+  input.value = 'read @HAND and summarize';
+  input.setSelectionRange(10, 10); // caret right after "@HAND"
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 200));
+  const q = posted.filter(m => m.type === 'mentionQuery').pop();
+  assert.equal(q.text, 'HAND');
+  send({ type: 'mentionResults', queryId: q.queryId, items: [{ label: 'HANDOVER.md', path: 'HANDOVER.md', kind: 'file' }] });
+  await frame();
+  $('mention-popup').querySelector('.mention-item').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+  assert.equal(input.value, 'read @HANDOVER.md and summarize');
+  assert.ok($('mention-popup').hidden);
+  assert.deepEqual([...window.document.querySelectorAll('.input-hl .mention-token')].map(m => m.textContent), ['@HANDOVER.md']);
+});
+
+test('picking a folder inserts @dir/ without a space and re-queries inside it', async () => {
+  const { window, posted, send, $, frame } = boot();
+  send(STATE);
+  const input = $('input');
+  input.value = '@sr';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 200));
+  const q = posted.filter(m => m.type === 'mentionQuery').pop();
+  send({ type: 'mentionResults', queryId: q.queryId, items: [{ label: 'src/', path: 'src/', kind: 'folder' }] });
+  await frame();
+  input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+  assert.equal(input.value, '@src/');
+  const q2 = posted.filter(m => m.type === 'mentionQuery').pop();
+  assert.equal(q2.text, 'src/');
+  assert.notEqual(q2.queryId, q.queryId);
+});
+
+test('@ toolbar button inserts @ at the caret and opens the picker', async () => {
+  const { window, posted, send, $ } = boot();
+  send(STATE);
+  const input = $('input');
+  input.value = 'look at';
+  input.setSelectionRange(7, 7);
+  $('mention').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert.equal(input.value, 'look at @');
+  const q = posted.filter(m => m.type === 'mentionQuery').pop();
+  assert.equal(q.text, '');
+  assert.ok(!$('mention-popup').hidden);
 });
 
 test('task card renders spinner then ok with summary', async () => {

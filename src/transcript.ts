@@ -1,7 +1,7 @@
 export type Item =
   | { kind: 'user'; text: string; profile?: string; attachments?: { name: string; mediaType: string }[] }
   | { kind: 'assistant'; text: string }
-  | { kind: 'thinking'; text: string }
+  | { kind: 'thinking'; text: string; tokens?: number }
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
   | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string; durationMs?: number; tokens?: number }
   | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string; action?: 'checkTasks' };
@@ -214,7 +214,15 @@ export class TurnTranslator {
         const d = ev.delta ?? {};
         if (i === undefined) break;
         if (d.type === 'text_delta' && d.text) this.t.append(i, d.text);
-        else if (d.type === 'thinking_delta' && d.thinking) this.t.append(i, d.thinking);
+        else if (d.type === 'thinking_delta') {
+          // claude -p on the Max subscription redacts the reasoning text: thinking_delta carries thinking: '' with only
+          // an estimated_tokens progress count. Append whatever text is present, and keep the highest token estimate.
+          if (d.thinking) this.t.append(i, d.thinking);
+          const it = this.t.items[i];
+          if (typeof d.estimated_tokens === 'number' && it?.kind === 'thinking' && d.estimated_tokens > (it.tokens ?? 0)) {
+            this.t.set(i, { ...it, tokens: d.estimated_tokens });
+          }
+        }
         break;
       }
     }

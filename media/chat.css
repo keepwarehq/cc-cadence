@@ -166,7 +166,15 @@ body {
   user-select: none;
 }
 
-.item.thinking.streaming summary {
+/* redacted thinking (no reasoning text available): a compact, non-clickable label */
+.item.thinking .thinking-label {
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+  font-size: 0.9em;
+}
+
+.item.thinking.streaming summary,
+.item.thinking.streaming .thinking-label {
   background: linear-gradient(90deg,
     var(--vscode-descriptionForeground) 0%,
     var(--vscode-foreground) 50%,
@@ -637,6 +645,44 @@ textarea {
   background: transparent;
   border: none;
   outline: none;
+}
+
+/* Mention highlighting: #input-hl mirrors the textarea text (same box, font, wrapping) behind it;
+   its text is invisible and only the @token backgrounds show through the transparent textarea */
+.input-wrap {
+  position: relative;
+}
+
+.input-wrap textarea {
+  position: relative;
+  z-index: 1;
+  scrollbar-gutter: stable; /* same reserved gutter as .input-hl, so both wrap at the same width */
+}
+
+.input-hl {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  padding: 8px 10px 2px;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: normal;
+  color: transparent;
+  pointer-events: none;
+}
+
+.input-hl .mention-token {
+  color: transparent;
+  background: color-mix(in srgb, var(--vscode-textLink-foreground, #3B9EFF) 28%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-textLink-foreground, #3B9EFF) 45%, transparent);
 }
 
 .composer:focus-within {
