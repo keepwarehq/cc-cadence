@@ -1,17 +1,32 @@
 {
-  "name": "ccprofile",
+  "name": "cc-cadence",
   "displayName": "CC Cadence",
   "description": "Chat in your editor with Claude (Max subscription via the local claude CLI) and any Anthropic-compatible model — switch models, keep the cadence.",
   "version": "0.0.15",
-  "publisher": "local",
-  "private": true,
+  "publisher": "keepware",
   "license": "MIT",
   "engines": {
     "vscode": "^1.100.0"
   },
   "categories": [
-    "Other"
+    "Chat"
   ],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "ai",
+    "chat",
+    "agent",
+    "assistant",
+    "llm",
+    "claude code",
+    "max subscription",
+    "multi-model"
+  ],
+  "galleryBanner": {
+    "color": "#121314",
+    "theme": "dark"
+  },
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"

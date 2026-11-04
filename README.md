@@ -1,6 +1,6 @@
 # CC Cadence
 
-A personal VS Code extension: chat in your editor with Claude (Max subscription) and any Anthropic-compatible model — switch models, keep the cadence. Driven by the local `claude` CLI.
+Chat in your editor with Claude (Max subscription) and any Anthropic-compatible model — switch models, keep the cadence. Driven by the local `claude` CLI. Free, forever, by [Keepware](https://www.keepware.dev).
 
 ## Features
 
