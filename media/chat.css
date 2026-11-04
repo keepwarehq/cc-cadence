@@ -20,18 +20,23 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 16px 16px 8px;
+  /* left offset of the centered 860px column, measured on the panel (100vw) like the footer's —
+     not on the scrollport, which a classic scrollbar narrows, shifting the log column left of the composer */
+  --col-gap: max(0px, (100vw - 32px - 860px) / 2);
 }
 
+/* border-box: padded / bordered rows (tool chips, task cards) stay exactly 860px, so every row shares one left edge */
 #log > * {
+  box-sizing: border-box;
   max-width: 860px;
-  margin-left: auto;
+  margin-left: var(--col-gap);
   margin-right: auto;
 }
 
 /* user bubble hugs the right edge of the centered 860px column, not the panel */
 #log > .item.user {
   margin-left: auto;
-  margin-right: max(0px, (100% - 860px) / 2);
+  margin-right: max(0px, 100% - 860px - var(--col-gap));
   max-width: min(80%, 688px);
 }
 
@@ -605,6 +610,7 @@ footer {
 }
 
 footer > * {
+  box-sizing: border-box;
   max-width: 860px;
   margin-left: auto;
   margin-right: auto;
