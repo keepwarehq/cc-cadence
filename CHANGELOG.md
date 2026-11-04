@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.18 — Everything lines up
+
+2026-11-04
+
+- **One left edge.** In a wide panel, tool lines, agent cards, text and the composer now start at the
+  same place. Agent cards used to stick out a few pixels to the left, and the composer sat a little
+  to the right.
+
 ## 0.0.17 — Agent cards and image previews
 
 2026-11-04
