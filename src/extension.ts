@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChatManager } from './chat';
+import { ChatManager, EDITOR_VIEW_TYPE } from './chat';
 import { runDoctor } from './doctor';
 
 export function activate(ctx: vscode.ExtensionContext): void {
@@ -7,6 +7,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
   ctx.subscriptions.push(
     chat,
     vscode.window.registerWebviewViewProvider('ccprofile.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }),
+    // revives the CC Cadence editor tabs that were open before a window reload
+    vscode.window.registerWebviewPanelSerializer(EDITOR_VIEW_TYPE, chat),
     vscode.commands.registerCommand('ccprofile.newChat', () => chat.newChat()),
     vscode.commands.registerCommand('ccprofile.stop', () => chat.stop()),
     vscode.commands.registerCommand('ccprofile.switchProfile', () => chat.switchProfile()),

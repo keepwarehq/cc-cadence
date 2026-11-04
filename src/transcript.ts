@@ -4,7 +4,7 @@ export type Item =
   | { kind: 'thinking'; text: string; tokens?: number }
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
   | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string; durationMs?: number; tokens?: number }
-  | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string; action?: 'checkTasks' };
+  | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string; action?: 'checkTasks' | 'setKey'; profileId?: string };
 
 /** Incremental ops sent to the webview; the webview replays them into the same items */
 export type Op =

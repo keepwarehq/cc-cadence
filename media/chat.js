@@ -149,6 +149,10 @@
           const btn = el('button', 'check', 'Check now');
           btn.addEventListener('click', () => vscode.postMessage({ type: 'checkTasks' }));
           node.appendChild(btn);
+        } else if (item.action === 'setKey' && item.profileId) {
+          const btn = el('button', 'check', 'Set API key');
+          btn.addEventListener('click', () => vscode.postMessage({ type: 'setKey', profileId: item.profileId }));
+          node.appendChild(btn);
         }
         break;
     }
@@ -409,6 +413,7 @@
     ].filter(Boolean).join(' \u00b7 ');
     if (!profilePopup.hidden) renderProfilePopup();
     currentMode = m.mode;
+    remember({ sessionId: m.sessionId, mode: m.mode });
     modePill.textContent = modeLabel(m.mode);
     modePill.classList.toggle('bypass', m.mode === 'bypassPermissions');
     attachments = m.attachments || [];
@@ -430,8 +435,7 @@
     vscode.postMessage({ type: 'send', text });
     input.value = '';
     syncHighlight();
-    const st = vscode.getState() || {};
-    vscode.setState({ ...st, draft: '' });
+    remember({ draft: '' });
   }
 
   sendBtn.addEventListener('click', send);
@@ -617,8 +621,12 @@
   }
 
   function saveDraft() {
-    const st = vscode.getState() || {};
-    vscode.setState({ ...st, draft: input.value });
+    remember({ draft: input.value });
+  }
+
+  /** Merge into the webview state; VS Code hands it back to the panel serializer after a window reload */
+  function remember(patch) {
+    vscode.setState({ ...(vscode.getState() || {}), ...patch });
   }
 
   /** Replace the `@query` being typed with `@path` (kept, like Claude Code); files get a trailing space, folders stay open for drilling in */
@@ -716,6 +724,7 @@
     else if (m.type === 'sessions') openHistory(m);
     else if (m.type === 'busy') setBusy(m.busy);
     else if (m.type === 'status') statusEl.textContent = m.text || '';
+    else if (m.type === 'session') remember({ sessionId: m.sessionId });
     else if (m.type === 'thumbs') {
       for (const th of m.thumbs || []) thumbs.set(th.id, th.thumb);
       renderChips();

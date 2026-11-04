@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Item, Transcript, TurnTranslator } from './transcript';
 import { DEFAULT_MODEL, PERMISSION_MODES, effortChoices, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles, modelChoices, resolveModel } from './profiles';
 import { TurnHandle, runTurn } from './runner';
-import { addProfile, keyName, manageProfiles } from './profileUi';
+import { addProfile, keyName, manageProfiles, setApiKey } from './profileUi';
 import { deleteSession, listSessions, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
 import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, nextAttachmentId, stagedName } from './attachments';
@@ -17,6 +17,8 @@ const MODEL_KEY = 'ccprofile.modelChoice';
 /** Picker effort choice, shared by every profile ('default' / a claude --effort level) */
 const EFFORT_KEY = 'ccprofile.effort';
 const MAX_SAVED_ITEMS = 300;
+/** viewType of the editor-tab chats; also named by the onWebviewPanel activation event in package.json */
+export const EDITOR_VIEW_TYPE = 'ccprofile.editor';
 
 interface Status { model?: string; auth?: string; last?: string; rate?: string }
 
@@ -42,7 +44,7 @@ interface MentionItem { label: string; path: string; kind: 'file' | 'folder' }
 export class ChatSession implements vscode.Disposable {
   private readonly webviews = new Set<vscode.Webview>();
   private readonly transcript = new Transcript(op => this.post({ type: 'op', ...op }));
-  private sessionId?: string;
+  private sid?: string;
   private running?: TurnHandle;
   private turn?: TurnTranslator;
   private stopping = false;
@@ -61,16 +63,31 @@ export class ChatSession implements vscode.Disposable {
   constructor(
     private readonly ctx: vscode.ExtensionContext,
     private readonly manager: ChatManager,
-    /** the sidebar session restores and persists its transcript; editor-panel sessions are ephemeral */
+    /** the sidebar session restores and persists its transcript in workspaceState; editor-panel sessions are
+     * restored after a window reload from their webview state instead (see ChatManager.deserializeWebviewPanel) */
     private readonly persistent: boolean,
+    /** permission mode of an editor tab being revived after a window reload */
+    restoredMode?: unknown,
   ) {
     if (persistent) {
       const saved = ctx.workspaceState.get<{ sessionId?: string; items?: Item[] }>(CHAT_KEY);
       this.sessionId = saved?.sessionId;
       this.transcript.items = saved?.items ?? [];
     }
-    // The permission mode is not remembered across windows: every session starts from the setting default
-    this.mode = vscode.workspace.getConfiguration('ccprofile').get<PermissionMode>('defaultPermissionMode') ?? 'bypassPermissions';
+    // A new chat starts from the setting default; a tab revived after a reload keeps the mode it had
+    this.mode = PERMISSION_MODES.includes(restoredMode as PermissionMode)
+      ? restoredMode as PermissionMode
+      : vscode.workspace.getConfiguration('ccprofile').get<PermissionMode>('defaultPermissionMode') ?? 'bypassPermissions';
+  }
+
+  /** Every change is mirrored to the webview, which keeps it in its state so the tab can be revived after a reload */
+  private get sessionId(): string | undefined {
+    return this.sid;
+  }
+
+  private set sessionId(id: string | undefined) {
+    this.sid = id;
+    this.post({ type: 'session', sessionId: id });
   }
 
   /** Render the chat into a freshly created webview and start listening to it */
@@ -107,7 +124,9 @@ export class ChatSession implements vscode.Disposable {
       let key: string | undefined;
       if (isThirdParty(profile)) {
         key = await this.ctx.secrets.get(keyName(profile.id));
-        if (!key) return this.notice('error', `"${profile.label}" has no API key yet: set one via "Manage models…" in the profile dropdown.`);
+        if (!key) {
+          return this.notice('error', `"${profile.label}" has no API key on this machine. Keys live in this machine's keychain and are not carried over by Settings Sync.`, 'setKey', profile.id);
+        }
       }
       const claudePath = expandHome(vscode.workspace.getConfiguration('ccprofile').get<string>('claudePath') || '~/.local/bin/claude');
       const cfg = vscode.workspace.getConfiguration('ccprofile');
@@ -123,6 +142,7 @@ export class ChatSession implements vscode.Disposable {
       this.turnStop = turnStop;
       const turn = new TurnTranslator(this.transcript, {
         init: e => {
+          if (e.sessionId) this.post({ type: 'session', sessionId: e.sessionId });
           this.status.model = e.model;
           if (isThirdParty(profile)) {
             this.status.auth = hostOf(profile.baseUrl!);
@@ -410,6 +430,16 @@ export class ChatSession implements vscode.Disposable {
     void this.save();
   }
 
+  /** Revive a tab after a window reload: replay its stored session quietly; a session that is gone leaves an empty chat */
+  async restore(id: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') return;
+    const items = await readTranscript(id, folder.uri.fsPath);
+    if (!items.length) return;
+    this.sessionId = id;
+    this.transcript.reset(items);
+  }
+
   dispose(): void {
     this.turn?.detach();
     this.running?.stop();
@@ -452,6 +482,7 @@ export class ChatSession implements vscode.Disposable {
       case 'pickProfile': void this.manager.pickProfile(this); break;
       case 'mentionQuery': if (typeof m.queryId === 'string' && typeof m.text === 'string') void this.mention(m.queryId, m.text); break;
       case 'checkTasks': void this.send('Check your background tasks and continue.'); break;
+      case 'setKey': if (typeof m.profileId === 'string') void this.manager.setKey(m.profileId); break;
     }
   }
 
@@ -472,6 +503,7 @@ export class ChatSession implements vscode.Disposable {
       effortChoices: effortChoices().map(e => ({ id: e, label: e === 'xhigh' ? 'XHigh' : choiceLabel(e), detail: e === DEFAULT_MODEL ? 'ccprofile.claudeSettings effortLevel, else the CLI default' : `--effort ${e}` })),
       mode: this.mode,
       modes: PERMISSION_MODES,
+      sessionId: this.sessionId,
       busy: !!this.running,
       items: this.transcript.items,
       attachments: this.pending.map(a => ({ id: a.id, name: a.name, kind: a.kind, mediaType: a.mediaType })),
@@ -492,8 +524,8 @@ export class ChatSession implements vscode.Disposable {
     this.post({ type: 'status', text: this.statusText() });
   }
 
-  private notice(level: 'info' | 'warn' | 'error', text: string, action?: 'checkTasks'): void {
-    this.transcript.push({ kind: 'notice', level, text, action });
+  private notice(level: 'info' | 'warn' | 'error', text: string, action?: 'checkTasks' | 'setKey', profileId?: string): void {
+    this.transcript.push({ kind: 'notice', level, text, action, profileId });
   }
 
   private post(msg: unknown): void {
@@ -554,7 +586,7 @@ export class ChatSession implements vscode.Disposable {
  * WebviewViewProvider (binding the one persistent session) and spawns a fresh independent session + editor tab
  * on every `ccprofile.open`.
  */
-export class ChatManager implements vscode.WebviewViewProvider, vscode.Disposable {
+export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPanelSerializer, vscode.Disposable {
   private readonly sessions = new Set<ChatSession>();
   /** Editor-panel sessions, keyed by their panel so the active one can answer the editor-title history button */
   private readonly panels = new Map<ChatSession, vscode.WebviewPanel>();
@@ -666,6 +698,12 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.Disposabl
     this.refreshAll();
   }
 
+  /** The "Set API key" button on a missing-key notice */
+  async setKey(profileId: string): Promise<void> {
+    const p = this.profiles().find(x => x.id === profileId);
+    if (p && isThirdParty(p)) await setApiKey(this.ctx.secrets, p.id, p.label);
+  }
+
   private refreshAll(): void {
     for (const s of this.sessions) s.refresh();
   }
@@ -692,18 +730,38 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.Disposabl
   openEditorPanel(resource?: unknown): void {
     const group = cadenceTargetGroup(resource);
     const column = group?.viewColumn ?? vscode.ViewColumn.Beside;
-    const panel = vscode.window.createWebviewPanel('ccprofile.editor', 'CC Cadence', { viewColumn: column, preserveFocus: false }, {
+    const panel = vscode.window.createWebviewPanel(EDITOR_VIEW_TYPE, 'CC Cadence', { viewColumn: column, preserveFocus: false }, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [this.media],
     });
+    this.adopt(panel, new ChatSession(this.ctx, this, false));
+    // a fresh split: lock it so opening files doesn't land in the chat group — it stays its own split (like Claude Code)
+    if (!group) void vscode.commands.executeCommand('workbench.action.lockEditorGroup');
+  }
+
+  /**
+   * VS Code revives the editor tabs that were open before a window reload: the webview state (kept by media/chat.js)
+   * carries the tab's session id and permission mode, and the transcript is replayed from the CLI's session file.
+   */
+  async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown): Promise<void> {
+    const saved = (state && typeof state === 'object' ? state : {}) as { sessionId?: unknown; mode?: unknown };
+    const session = new ChatSession(this.ctx, this, false, saved.mode);
+    if (typeof saved.sessionId === 'string' && saved.sessionId) {
+      try {
+        await session.restore(saved.sessionId);
+      } catch { /* an unreadable session file leaves an empty chat */ }
+    }
+    this.adopt(panel, session);
+  }
+
+  /** Bind an editor panel (new or revived) to its session */
+  private adopt(panel: vscode.WebviewPanel, session: ChatSession): void {
+    panel.webview.options = { enableScripts: true, localResourceRoots: [this.media] };
     panel.iconPath = vscode.Uri.joinPath(this.media, 'logo.svg');
-    const session = new ChatSession(this.ctx, this, false);
     this.sessions.add(session);
     this.panels.set(session, panel);
     session.wire(panel.webview, this.media);
-    // a fresh split: lock it so opening files doesn't land in the chat group — it stays its own split (like Claude Code)
-    if (!group) void vscode.commands.executeCommand('workbench.action.lockEditorGroup');
     panel.onDidDispose(() => {
       session.dispose();
       this.sessions.delete(session);
@@ -736,7 +794,7 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.Disposabl
 }
 
 function isCadenceTab(tab: vscode.Tab | undefined): boolean {
-  return tab?.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('ccprofile.editor');
+  return tab?.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith(EDITOR_VIEW_TYPE);
 }
 
 /** The CC Cadence editor group the open button was clicked in, or undefined when it was clicked from a file group */

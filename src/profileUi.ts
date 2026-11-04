@@ -39,6 +39,14 @@ function uniqueId(label: string, list: RawProfile[]): string {
   return id;
 }
 
+/** Ask for one profile's API key and store it in this machine's keychain (Settings Sync never carries it) */
+export async function setApiKey(secrets: vscode.SecretStorage, id: string, name: string): Promise<boolean> {
+  const v = await ask(`"${name}" API key`, "Stored in this machine's keychain, never in settings (not synced)", { password: true, validateInput: required });
+  if (v === undefined) return false;
+  await secrets.store(keyName(id), v.trim());
+  return true;
+}
+
 /** Ask for label, base URL, API key and model name in sequence; returns the new profile's id */
 export async function addProfile(secrets: vscode.SecretStorage): Promise<string | undefined> {
   const step = (n: number) => `Add model (${n}/4)`;
@@ -104,11 +112,9 @@ export async function manageProfiles(secrets: vscode.SecretStorage): Promise<str
       p.baseUrl = v.trim();
       break;
     }
-    case 'key': {
-      const v = await ask(`"${name}" API key`, 'Stored in the system keychain, never in settings', { password: true, validateInput: required });
-      if (v !== undefined) await secrets.store(keyName(id), v.trim());
+    case 'key':
+      await setApiKey(secrets, id, name);
       return;
-    }
     case 'model': {
       const v = await ask(`"${name}" model name`, 'Leave empty to use the provider default mapping', { value: p.model ?? '' });
       if (v === undefined) return;

@@ -30,17 +30,23 @@ const BODY = `
   </div>
 </footer>`;
 
-function boot() {
+function boot(initialState) {
   const dom = new JSDOM(`<!DOCTYPE html><body>${BODY}</body>`, { runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
   const posted = [];
+  // webview state round-trips through JSON like VS Code's persisted state
+  let saved = initialState;
   // Serialize like a real postMessage (also drops jsdom object prototypes)
-  window.acquireVsCodeApi = () => ({ postMessage: m => posted.push(JSON.parse(JSON.stringify(m))), getState: () => undefined, setState: () => {} });
+  window.acquireVsCodeApi = () => ({
+    postMessage: m => posted.push(JSON.parse(JSON.stringify(m))),
+    getState: () => saved,
+    setState: s => { saved = JSON.parse(JSON.stringify(s)); },
+  });
   for (const f of ['../media/vendor/marked.min.js', '../media/vendor/purify.min.js', '../media/chat.js']) window.eval(read(f));
   const send = data => window.dispatchEvent(new window.MessageEvent('message', { data }));
   const $ = id => window.document.getElementById(id);
   const frame = () => new Promise(r => window.requestAnimationFrame(() => r()));
-  return { window, posted, send, $, frame };
+  return { window, posted, send, $, frame, state: () => saved };
 }
 
 const STATE = {
@@ -565,4 +571,31 @@ test('every composer popup hides when its [hidden] attribute is set (CSS does no
     const hasHiddenRule = new RegExp(`#${id}\\[hidden\\]`).test(css);
     assert.ok(hasHiddenRule, `#${id} must have a [hidden] display:none rule or it can never be closed`);
   }
+});
+
+test('webview state keeps the session id and mode for reload revival, without dropping the draft', () => {
+  const { window, send, $, state } = boot({ draft: 'half-typed' });
+  assert.equal($('input').value, 'half-typed');
+  send({ ...STATE, mode: 'plan', sessionId: 'aaa-111' });
+  assert.deepEqual(state(), { draft: 'half-typed', sessionId: 'aaa-111', mode: 'plan' });
+  // the CLI reports a new session id mid-turn
+  send({ type: 'session', sessionId: 'bbb-222' });
+  assert.equal(state().sessionId, 'bbb-222');
+  assert.equal(state().draft, 'half-typed');
+  // New chat clears it
+  send({ type: 'session' });
+  assert.equal(state().sessionId, undefined);
+  $('input').value = 'next';
+  $('input').dispatchEvent(new window.Event('input'));
+  assert.equal(state().draft, 'next');
+  assert.equal(state().mode, 'plan');
+});
+
+test('a missing-key notice carries a Set API key button that posts the profile id', () => {
+  const { window, posted, send, $ } = boot();
+  send({ ...STATE, items: [{ kind: 'notice', level: 'error', text: 'no key', action: 'setKey', profileId: 'glm-5-3' }] });
+  const btn = [...$('log').querySelectorAll('button')].find(b => b.textContent === 'Set API key');
+  assert.ok(btn);
+  btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(posted.at(-1), { type: 'setKey', profileId: 'glm-5-3' });
 });
