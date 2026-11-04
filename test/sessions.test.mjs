@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync, readFileSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'ccprofile-sessions-'));
-const { configDir, slugFor, listSessions, readTranscript, deleteSession, readSubagentTranscript } = await import('../out/sessions.js');
+const { configDir, slugFor, listSessions, readTranscript, deleteSession, readSubagentTranscript, readSessionTitle, appendAiTitle, fallbackTitle, sessionPath, projectDir } = await import('../out/sessions.js');
 
 test('slugFor replaces every non-alphanumeric character with a dash', () => {
   assert.equal(slugFor('/home/u.code/my_app'), '-home-u-code-my-app');
@@ -116,4 +116,63 @@ test('readSubagentTranscript replays a subagent transcript (all sidechain record
   assert.equal(items[1].output, '(Bash completed with no output)');
   assert.deepEqual(await readSubagentTranscript(sid, '/w4', 'missing'), []);
   rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+});
+
+test('readSessionTitle: the first ai-title, and the first user text (plain or the text blocks of an attachment send)', async () => {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-t');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's1.jsonl'), [
+    '{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},{"type":"text","text":"why is this card misaligned"}]}}',
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"looking"}]}}',
+    '{"type":"ai-title","aiTitle":"Card alignment","sessionId":"s1"}',
+    '{"type":"ai-title","aiTitle":"Card alignment","sessionId":"s1"}',
+  ].join('\n') + '\n');
+  assert.deepEqual(await readSessionTitle('s1', '/t'), { aiTitle: 'Card alignment', firstText: 'why is this card misaligned' });
+  writeFileSync(join(dir, 's2.jsonl'), '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"ok"}]}}\n{"type":"user","message":{"role":"user","content":"real question"}}\n');
+  assert.deepEqual(await readSessionTitle('s2', '/t'), { aiTitle: undefined, firstText: 'real question' });
+  assert.deepEqual(await readSessionTitle('missing', '/t'), { aiTitle: undefined, firstText: undefined });
+});
+
+test('appendAiTitle appends a CLI-shaped ai-title line that listSessions and readSessionTitle pick up', async () => {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-a');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'abc.jsonl');
+  assert.equal(sessionPath('abc', '/a'), file);
+  // no trailing newline: the record must still start on its own line
+  writeFileSync(file, '{"type":"user","message":{"role":"user","content":"name   this\\nchat"}}');
+  assert.equal((await listSessions('/a'))[0].title, 'name this chat', 'fallback: first message on one line');
+  assert.equal(await appendAiTitle('abc', '/a', 'Session naming'), true);
+  const lines = readFileSync(file, 'utf8').split('\n');
+  assert.equal(lines.length, 3);
+  assert.equal(lines[2], '');
+  assert.deepEqual(JSON.parse(lines[1]), { type: 'ai-title', aiTitle: 'Session naming', sessionId: 'abc' });
+  assert.equal((await readSessionTitle('abc', '/a')).aiTitle, 'Session naming');
+  assert.equal((await listSessions('/a'))[0].title, 'Session naming');
+});
+
+test('appendAiTitle never creates a session file and skips an empty one', async () => {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-n');
+  mkdirSync(dir, { recursive: true });
+  assert.equal(await appendAiTitle('nope', '/n', 'X'), false);
+  assert.equal(existsSync(join(dir, 'nope.jsonl')), false);
+  writeFileSync(join(dir, 'empty.jsonl'), '');
+  assert.equal(await appendAiTitle('empty', '/n', 'X'), false);
+  assert.equal(readFileSync(join(dir, 'empty.jsonl'), 'utf8'), '');
+});
+
+test('fallbackTitle puts the first message on one line and clips it to 60 characters', () => {
+  assert.equal(fallbackTitle('  fix\n\tthe   bug '), 'fix the bug');
+  const long = fallbackTitle('z'.repeat(100));
+  assert.equal(long.length, 61);
+  assert.ok(long.endsWith('…'));
+});
+
+test('projectDir slugs the real path, like claude does for a symlinked workspace', () => {
+  const real = mkdtempSync(join(tmpdir(), 'ccprofile-real-'));
+  const link = join(mkdtempSync(join(tmpdir(), 'ccprofile-link-')), 'ws');
+  symlinkSync(real, link);
+  const expected = join(process.env.CLAUDE_CONFIG_DIR, 'projects', slugFor(realpathSync(real)));
+  assert.equal(projectDir(link), expected);
+  assert.equal(projectDir(real), expected);
+  assert.equal(projectDir('/does/not/exist'), join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-does-not-exist'));
 });

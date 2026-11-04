@@ -6,10 +6,11 @@ import { Attachment, Item, Transcript, TurnTranslator } from './transcript';
 import { DEFAULT_MODEL, PERMISSION_MODES, effortChoices, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles, modelChoices, resolveModel } from './profiles';
 import { TurnHandle, runTurn } from './runner';
 import { addProfile, keyName, manageProfiles, setApiKey } from './profileUi';
-import { deleteSession, listSessions, parseTranscript, readSubagentTranscript, readTranscript } from './sessions';
+import { appendAiTitle, deleteSession, fallbackTitle, listSessions, parseTranscript, readSessionTitle, readSubagentTranscript, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
 import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, imageFileName, isImageType, nextAttachmentId, stagedName } from './attachments';
 import { resultNotice } from './turnResult';
+import { generateTitle, tabTitle } from './title';
 
 const CHAT_KEY = 'ccprofile.chat';
 const ACTIVE_KEY = 'ccprofile.activeProfile';
@@ -78,6 +79,18 @@ interface PendingAttachment {
 interface MentionItem { label: string; path: string; kind: 'file' | 'folder' }
 
 /**
+ * Naming one claude session. The session is fixed (a resumed / revived one) or whichever session `turn` creates
+ * (a new chat's first turn). A chat replaces its job on New chat / resume, so a late reply for an earlier session is dropped.
+ */
+interface TitleJob {
+  sessionId?: string;
+  turn?: TurnTranslator;
+  aiTitle?: string;
+  /** the ai-title record is in the session file (read from it, or appended) */
+  written: boolean;
+}
+
+/**
  * One independent chat: its own transcript, session id, running turn and attachments, bound to a single webview
  * (the sidebar view or one editor panel). Model/effort/profile are shared app-wide and read from the manager;
  * the permission mode is per-session so different tabs can run under different modes.
@@ -97,6 +110,11 @@ export class ChatSession implements vscode.Disposable {
   private interrupting?: Promise<void>;
   private generation = 0;
   private historyPending = false;
+  /** What this chat is called: the fast-model title, or its first message until (or unless) that arrives */
+  private titleText?: string;
+  private titleJob?: TitleJob;
+  /** The manager points this at the tab (or sidebar view) the chat is shown in */
+  onTitle?: (title: string | undefined) => void;
   mode: PermissionMode;
   private status: Status = {};
   private readonly disposables: vscode.Disposable[] = [];
@@ -114,6 +132,7 @@ export class ChatSession implements vscode.Disposable {
       const saved = ctx.workspaceState.get<{ sessionId?: string; items?: Item[] }>(CHAT_KEY);
       this.sessionId = saved?.sessionId;
       this.transcript.items = saved?.items ?? [];
+      if (this.sessionId) void this.loadTitle(this.sessionId);
     }
     // A new chat starts from the setting default; a tab revived after a reload keeps the mode it had
     this.mode = PERMISSION_MODES.includes(restoredMode as PermissionMode)
@@ -207,13 +226,16 @@ export class ChatSession implements vscode.Disposable {
       });
 
       const blocks = buildBlocks(text, images, filePaths);
+      const env = buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv'));
+      // a turn that opens a new session gets named after this first message (by the fast model, in parallel)
+      if (!resumed) this.startTitle({ turn }, text, claudePath, env);
       this.stopping = false;
       this.turn = turn;
       this.settings = await writeSettingsFile(cfg.get<Record<string, unknown>>('claudeSettings'));
       const handle = runTurn({
         claudePath,
         cwd: folder.uri.fsPath,
-        env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
+        env,
         message: { text, blocks },
         permissionMode: mode,
         sessionId: this.sessionId,
@@ -243,6 +265,8 @@ export class ChatSession implements vscode.Disposable {
 
     turn.finish(this.stopping ? 'Interrupted' : 'Incomplete');
     if (turn.sessionId) this.sessionId = turn.sessionId;
+    // a title that arrived before claude had written the session file is saved now
+    if (this.titleJob) void this.writeTitle(this.titleJob);
     if (exit.spawnError) {
       this.notice('error', `Failed to start claude (${claudePath}): ${exit.spawnError.message}\nChange the path in the ccprofile.claudePath setting.`);
     } else if (this.stopping) {
@@ -263,6 +287,8 @@ export class ChatSession implements vscode.Disposable {
     const handle = this.running!;
     const prev = this.turn;
     this.running = undefined;
+    // the replacing message continues the interrupted turn's session (its awaitTurn returns early and won't set it)
+    if (prev?.sessionId) this.sessionId = prev.sessionId;
     this.stopping = false;
     if (this.turnStop) this.turnStop.stopped = true; // suppress the SIGINT'd result's red error
     handle.stop();
@@ -458,6 +484,8 @@ export class ChatSession implements vscode.Disposable {
     this.turn = undefined;
     this.stop();
     this.sessionId = undefined;
+    this.titleJob = undefined;
+    this.setTitle(undefined);
     this.status = {};
     this.transcript.reset([]);
     this.sendState();
@@ -523,6 +551,7 @@ export class ChatSession implements vscode.Disposable {
     this.turn = undefined;
     this.stop();
     this.sessionId = id;
+    void this.loadTitle(id);
     this.transcript.reset(items);
     this.sendState();
     void this.save();
@@ -536,9 +565,80 @@ export class ChatSession implements vscode.Disposable {
     if (!items.length) return;
     this.sessionId = id;
     this.transcript.reset(items);
+    await this.loadTitle(id);
+  }
+
+  // ---- session title: the fast model names each session; the tab shows it ----
+
+  get title(): string | undefined {
+    return this.titleText;
+  }
+
+  private setTitle(title: string | undefined): void {
+    this.titleText = title;
+    this.onTitle?.(title);
+  }
+
+  /** Show the fallback (the first message) now and ask the fast model for the real title in the background */
+  private startTitle(target: { sessionId?: string; turn?: TurnTranslator }, firstMessage: string, claudePath: string, env: NodeJS.ProcessEnv): void {
+    const job: TitleJob = { ...target, written: false };
+    this.titleJob = job;
+    this.setTitle(fallbackTitle(firstMessage));
+    if (!vscode.workspace.getConfiguration('ccprofile').get<boolean>('aiTitles', true)) return;
+    void generateTitle({ claudePath, env, firstMessage }).then(title => {
+      if (!title || this.titleJob !== job) return; // failed, or the chat moved on to another session
+      job.aiTitle = title;
+      this.setTitle(title);
+      void this.writeTitle(job);
+    });
+  }
+
+  /** Append the job's title to its session file once that file exists (retried when the turn ends) */
+  private async writeTitle(job: TitleJob): Promise<void> {
+    const sid = job.sessionId ?? job.turn?.sessionId;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!job.aiTitle || job.written || !sid || folder?.uri.scheme !== 'file') return;
+    job.written = true; // claimed: a concurrent call must not append a second record
+    if (!(await appendAiTitle(sid, folder.uri.fsPath, job.aiTitle))) job.written = false;
+  }
+
+  /** A resumed / revived session: show its stored title; one without an ai-title (older chats) is named now */
+  private async loadTitle(id: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder?.uri.scheme !== 'file') return;
+    const job: TitleJob = { sessionId: id, written: false };
+    this.titleJob = job;
+    const { aiTitle, firstText } = await readSessionTitle(id, folder.uri.fsPath);
+    if (this.titleJob !== job) return;
+    if (aiTitle) {
+      job.aiTitle = aiTitle;
+      job.written = true;
+      this.setTitle(aiTitle);
+      return;
+    }
+    if (firstText === undefined) return this.setTitle(undefined);
+    const run = await this.titleRunner();
+    if (this.titleJob !== job) return;
+    if (run) this.startTitle({ sessionId: id }, firstText, run.claudePath, run.env);
+    else this.setTitle(fallbackTitle(firstText));
+  }
+
+  /** claude path + env for a title call outside a turn, with the active profile; undefined when its API key is missing */
+  private async titleRunner(): Promise<{ claudePath: string; env: NodeJS.ProcessEnv } | undefined> {
+    const cfg = vscode.workspace.getConfiguration('ccprofile');
+    const profile = this.manager.activeProfile();
+    const key = isThirdParty(profile) ? await this.ctx.secrets.get(keyName(profile.id)) : undefined;
+    if (isThirdParty(profile) && !key) return undefined;
+    return {
+      claudePath: expandHome(cfg.get<string>('claudePath') || '~/.local/bin/claude'),
+      env: buildEnv(process.env, profile, key, cfg.get<Record<string, string>>('claudeEnv')),
+    };
   }
 
   dispose(): void {
+    // a title still on its way must not touch the closed tab
+    this.titleJob = undefined;
+    this.onTitle = undefined;
     this.turn?.detach();
     this.running?.stop();
     void this.settings?.dispose();
@@ -824,6 +924,9 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
     }
     const session = this.primary;
     view.webview.options = { enableScripts: true, localResourceRoots: this.roots };
+    // the sidebar has no tab: its chat's title goes next to the view name
+    session.onTitle = t => { view.description = t ? tabTitle(t) : undefined; };
+    session.onTitle(session.title);
     session.wire(view.webview, this.media);
     view.onDidDispose(() => session.unwire(view.webview));
   }
@@ -866,6 +969,9 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
   private adopt(panel: vscode.WebviewPanel, session: ChatSession): void {
     panel.webview.options = { enableScripts: true, localResourceRoots: this.roots };
     panel.iconPath = vscode.Uri.joinPath(this.media, 'logo.svg');
+    // the tab is named after its chat (the fast-model title), "CC Cadence" while empty
+    session.onTitle = t => { panel.title = tabTitle(t); };
+    session.onTitle(session.title);
     this.sessions.add(session);
     this.panels.set(session, panel);
     session.wire(panel.webview, this.media);

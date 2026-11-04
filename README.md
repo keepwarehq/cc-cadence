@@ -13,6 +13,7 @@ code --install-extension keepware.cc-cadence
 
 - **Many profiles, one panel** — the built-in Claude profile runs the local `claude -p` on its own `/login` Max subscription. Other profiles point at any Anthropic-compatible endpoint with a Base URL + API key, so every model gets the same tools: read/write files, run commands, subagents.
 - **Session history** — conversations are stored by the CLI itself. The clock button at the top right of the panel drops down the session list (search by title); click one to resume it, or × twice to delete it.
+- **Named chats** — the fast model (the active profile's `haiku`) gives each chat a short title from its first message. The title shows on the chat's tab and in History, and is saved in the claude session file as the same `ai-title` record the CLI writes for its own titles. Older chats get named the first time you open them. Turn it off with `ccprofile.aiTitles`.
 - **Attachments** — paste a screenshot from the clipboard, drag files onto the composer, or use ＋. Images go straight to the model as base64 blocks; other files are staged under `.ccprofile/attachments/` and handed to the model as paths.
 - **@-mentions** — type `@` to fuzzy-search files and folders and drop a path into the message.
 - **Extra Claude Code parameters** — `ccprofile.claudeEnv` injects environment variables (e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); `ccprofile.claudeSettings` passes settings keys (e.g. `effortLevel`) via `--settings`.
@@ -79,6 +80,7 @@ claude -p --output-format stream-json --verbose --include-partial-messages \
 - The working directory is the first workspace folder. With no folder open, the panel refuses to run (it never falls back to `$HOME`).
 - All `ANTHROPIC_*` / `CLAUDE_CODE_*` variables are stripped from the inherited environment first, so they can't outrank the Max subscription. Explicitly configured `claudeEnv` entries are applied after the strip.
 - A turn ends when the process exits — not at the first `result` — which is what lets background tasks wake the conversation back up.
+- A new chat's first message also starts one small title call alongside the turn: `claude -p --model haiku --no-session-persistence --tools "" --strict-mcp-config --setting-sources ""` with a naming-only system prompt, run from a temp directory. It has no tools, no MCP servers and no hooks, and it writes no session file of its own. The reply is appended to the chat's session JSONL as an `ai-title` record. If it fails, the chat keeps its first message as its name.
 
 The status line shows the auth source each turn. If the Claude profile is not on the Max subscription, you get a warning.
 
@@ -90,7 +92,7 @@ The status line shows the auth source each turn. If the Claude profile is not on
 
 ## Privacy
 
-The extension never reads, stores, or forwards your Claude tokens. Third-party API keys live in the OS keychain.
+The extension never reads, stores, or forwards your Claude tokens. Third-party API keys live in the OS keychain. Chat titles come from the same provider as the chat (the active profile), and only the first message is sent for them.
 
 ## Development
 

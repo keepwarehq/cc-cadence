@@ -182,6 +182,11 @@
             "type": "string"
           }
         },
+        "ccprofile.aiTitles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Name each chat with a short title from the fast model (the active profile's haiku), shown on its tab and in History. The title is saved in the claude session file, like the CLI's own titles. Off: chats are named after their first message."
+        },
         "ccprofile.claudeSettings": {
           "type": "object",
           "default": {},

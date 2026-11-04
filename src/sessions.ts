@@ -17,6 +17,14 @@ export function slugFor(absPath: string): string {
   return absPath.replace(/[^A-Za-z0-9]/g, '-');
 }
 
+/** The CLI's session store for a cwd. claude slugs its process.cwd(), which resolves symlinks (/var → /private/var),
+ * so a workspace opened through a symlinked path must be resolved the same way */
+export function projectDir(cwd: string): string {
+  let real = cwd;
+  try { real = fs.realpathSync(cwd); } catch { /* gone or virtual: as given */ }
+  return path.join(configDir(), 'projects', slugFor(real));
+}
+
 /** One record of a session JSONL, as far as the panel cares */
 interface SessionRecord {
   type?: string;
@@ -50,15 +58,73 @@ async function firstLineMatching(file: string, match: (r: SessionRecord) => stri
   return undefined;
 }
 
+/** A main-chain user turn's typed text: a plain string, or the text blocks of an attachment send (tool results have none) */
 const userText = (r: SessionRecord): string | undefined => {
   if (r.type !== 'user' || r.isSidechain) return undefined;
   const c = r.message?.content;
-  return typeof c === 'string' && c.trim() ? c : undefined;
+  if (typeof c === 'string') return c.trim() ? c : undefined;
+  if (!Array.isArray(c)) return undefined;
+  const text = (c as Array<Record<string, unknown>>)
+    .map(b => (b?.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
+  return text.trim() ? text : undefined;
 };
+
+const aiTitleOf = (r: SessionRecord): string | undefined =>
+  r.type === 'ai-title' && typeof r.aiTitle === 'string' && r.aiTitle.trim() ? r.aiTitle.trim() : undefined;
+
+/** A session's JSONL file in the CLI's project store */
+export function sessionPath(sessionId: string, cwd: string): string {
+  return path.join(projectDir(cwd), `${sessionId}.jsonl`);
+}
+
+/** One pass over a session file: its ai-title (the first one; the CLI re-appends the same record) and first user text */
+export async function readSessionTitle(sessionId: string, cwd: string): Promise<{ aiTitle?: string; firstText?: string }> {
+  let aiTitle: string | undefined;
+  let firstText: string | undefined;
+  try {
+    await firstLineMatching(sessionPath(sessionId, cwd), r => {
+      aiTitle ??= aiTitleOf(r);
+      firstText ??= userText(r);
+      return aiTitle;
+    });
+  } catch { /* missing or unreadable: no title */ }
+  return { aiTitle, firstText };
+}
+
+/**
+ * Record a generated title the way the CLI does — an ai-title line appended to the session file — so the history
+ * list, revived tabs and `claude --resume` all pick it up. Never creates the file: a session that has not been
+ * written yet is retried later by the caller. The CLI also only ever appends (O_APPEND), so a one-line write cannot
+ * interleave with its own lines.
+ */
+export async function appendAiTitle(sessionId: string, cwd: string, title: string): Promise<boolean> {
+  const file = sessionPath(sessionId, cwd);
+  let endsWithNewline: boolean;
+  try {
+    const fh = await fsp.open(file, 'r');
+    try {
+      const { size } = await fh.stat();
+      if (!size) return false;
+      const last = Buffer.alloc(1);
+      await fh.read(last, 0, 1, size - 1);
+      endsWithNewline = last[0] === 0x0a;
+    } finally {
+      await fh.close();
+    }
+    // O_APPEND: lands at the end even if the CLI appended meanwhile
+    const line = JSON.stringify({ type: 'ai-title', aiTitle: title, sessionId }) + '\n';
+    await fsp.appendFile(file, (endsWithNewline ? '' : '\n') + line, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** List the cwd's sessions, newest first; sessions without any user text are skipped */
 export async function listSessions(cwd: string): Promise<SessionSummary[]> {
-  const dir = path.join(configDir(), 'projects', slugFor(cwd));
+  const dir = projectDir(cwd);
   let names: string[];
   try {
     names = (await fsp.readdir(dir)).filter(n => n.endsWith('.jsonl'));
@@ -67,25 +133,21 @@ export async function listSessions(cwd: string): Promise<SessionSummary[]> {
   }
   const out: SessionSummary[] = [];
   for (const name of names) {
-    const file = path.join(dir, name);
-    const st = await fsp.stat(file);
+    const st = await fsp.stat(path.join(dir, name));
     if (!st.isFile()) continue;
     const sessionId = name.slice(0, -'.jsonl'.length);
-    const title = await firstLineMatching(file, r =>
-      r.type === 'ai-title' && typeof r.aiTitle === 'string' && r.aiTitle.trim() ? r.aiTitle : undefined) ?? '';
+    // the ai-title, else the first user text clipped; sessions with neither are skipped
+    const t = await readSessionTitle(sessionId, cwd);
+    const title = t.aiTitle ?? (t.firstText === undefined ? undefined : fallbackTitle(t.firstText));
+    if (title === undefined) continue;
     out.push({ sessionId, title, mtimeMs: st.mtimeMs, sizeBytes: st.size });
   }
-  // second pass for the title fallback: first user text, clipped; sessions without user text are skipped
-  const withText: SessionSummary[] = [];
-  for (const s of out) {
-    if (s.title) { withText.push(s); continue; }
-    const file = path.join(dir, s.sessionId + '.jsonl');
-    const first = await firstLineMatching(file, userText);
-    if (first === undefined) continue;
-    s.title = clip(first, 60);
-    withText.push(s);
-  }
-  return withText.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/** The title a session shows until (or unless) the fast model names it: its first message, on one line, clipped */
+export function fallbackTitle(firstText: string): string {
+  return clip(firstText.replace(/\s+/g, ' ').trim(), 60);
 }
 
 /**
@@ -98,7 +160,7 @@ export async function readTranscript(
   cwd: string,
   onImage?: (mediaType: string, base64: string) => string | undefined,
 ): Promise<Item[]> {
-  const file = path.join(configDir(), 'projects', slugFor(cwd), `${sessionId}.jsonl`);
+  const file = sessionPath(sessionId, cwd);
   let text: string;
   try {
     text = await fsp.readFile(file, 'utf8');
@@ -110,7 +172,7 @@ export async function readTranscript(
 
 /** Where the CLI keeps a subagent's own transcript (an agent task's output file is a symlink to it) */
 export function subagentTranscriptPath(sessionId: string, cwd: string, agentId: string): string {
-  return path.join(configDir(), 'projects', slugFor(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`);
+  return path.join(projectDir(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`);
 }
 
 /** Replay a subagent's transcript (its prompt, tool calls and replies) for the task detail panel; [] when absent */
@@ -193,7 +255,7 @@ export function parseTranscript(
 
 /** Delete a session's JSONL file */
 export async function deleteSession(sessionId: string, cwd: string): Promise<void> {
-  const file = path.join(configDir(), 'projects', slugFor(cwd), `${sessionId}.jsonl`);
+  const file = sessionPath(sessionId, cwd);
   await fsp.rm(file, { force: true });
 }
 
