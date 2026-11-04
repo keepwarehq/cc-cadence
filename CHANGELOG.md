@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.0.19 — Named chats
+
+2026-11-04
+
+- **Every chat gets a name.** The fast model (your profile's haiku) gives each chat a short title from
+  its first message, in a couple of seconds. Each CC Cadence tab shows its chat's title instead of
+  "CC Cadence", and so does History. The sidebar shows it next to the panel name.
+- **Saved where Claude Code keeps its own titles.** The title goes into the claude session file, the
+  same kind of record the CLI writes, so it stays with the conversation and survives a window reload.
+  Chats from before this update get named the first time you open them. Turn it off with the
+  `ccprofile.aiTitles` setting.
+- **Interrupting the first reply keeps the conversation.** Sending a new message while the very first
+  reply was still running used to start a fresh session. Now it continues the same one, like any
+  later message does.
+- **Workspaces opened through a symlink** now find their history, revived tabs and titles.
+
 ## 0.0.18 — Everything lines up
 
 2026-11-04
