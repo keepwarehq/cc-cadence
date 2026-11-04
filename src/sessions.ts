@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
-import type { Item } from './transcript';
+import type { Attachment, Item } from './transcript';
 
 export interface SessionSummary { sessionId: string; title: string; mtimeMs: number; sizeBytes: number }
 
@@ -88,8 +88,16 @@ export async function listSessions(cwd: string): Promise<SessionSummary[]> {
   return withText.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-/** Replay a stored session into display items; sidechain records are skipped */
-export async function readTranscript(sessionId: string, cwd: string): Promise<Item[]> {
+/**
+ * Replay a stored session into display items; sidechain records are skipped.
+ * onImage, when given, receives each base64 image block of a user turn and returns its preview-store file name;
+ * images it declines (or every image, without it) are noted as "[N images attached]" text instead.
+ */
+export async function readTranscript(
+  sessionId: string,
+  cwd: string,
+  onImage?: (mediaType: string, base64: string) => string | undefined,
+): Promise<Item[]> {
   const file = path.join(configDir(), 'projects', slugFor(cwd), `${sessionId}.jsonl`);
   let text: string;
   try {
@@ -97,13 +105,41 @@ export async function readTranscript(sessionId: string, cwd: string): Promise<It
   } catch {
     return [];
   }
+  return parseTranscript(text, { onImage });
+}
+
+/** Where the CLI keeps a subagent's own transcript (an agent task's output file is a symlink to it) */
+export function subagentTranscriptPath(sessionId: string, cwd: string, agentId: string): string {
+  return path.join(configDir(), 'projects', slugFor(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`);
+}
+
+/** Replay a subagent's transcript (its prompt, tool calls and replies) for the task detail panel; [] when absent */
+export async function readSubagentTranscript(sessionId: string, cwd: string, agentId: string): Promise<Item[]> {
+  let text: string;
+  try {
+    text = await fsp.readFile(subagentTranscriptPath(sessionId, cwd, agentId), 'utf8');
+  } catch {
+    return [];
+  }
+  return parseTranscript(text, { sidechain: true });
+}
+
+/**
+ * Session-format JSONL → display items. Sidechain records (subagent internals inside a main session) are skipped,
+ * unless `sidechain` is set: a subagent's own transcript consists of nothing else.
+ */
+export function parseTranscript(
+  text: string,
+  opts: { onImage?: (mediaType: string, base64: string) => string | undefined; sidechain?: boolean } = {},
+): Item[] {
+  const { onImage } = opts;
   const items: Item[] = [];
   const toolAt = new Map<string, number>();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let v: unknown;
     try { v = JSON.parse(line); } catch { continue; }
-    if (!isRecord(v) || v.isSidechain) continue;
+    if (!isRecord(v) || (v.isSidechain && !opts.sidechain)) continue;
     const content = v.message?.content;
     if (v.type === 'user') {
       if (typeof content === 'string' && content.trim()) {
@@ -111,13 +147,23 @@ export async function readTranscript(sessionId: string, cwd: string): Promise<It
       } else if (Array.isArray(content)) {
         // block-array user turns (attachment sends, pasted images): join text parts, note images
         const texts: string[] = [];
+        const shown: Attachment[] = [];
         let images = 0;
         for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type === 'text' && typeof b.text === 'string' && b.text) texts.push(b.text);
-          else if (b?.type === 'image') images++;
+          else if (b?.type === 'image') {
+            images++;
+            const src = b.source as Record<string, unknown> | undefined;
+            const file = onImage && src?.type === 'base64' && typeof src.media_type === 'string' && typeof src.data === 'string'
+              ? onImage(src.media_type, src.data)
+              : undefined;
+            if (file) shown.push({ name: `image-${shown.length + 1}.${file.split('.').pop()}`, mediaType: String(src!.media_type), file });
+          }
         }
+        const unshown = images - shown.length;
         if (texts.length || images) {
-          items.push({ kind: 'user', text: texts.join('\n') + (images ? `${texts.length ? '\n' : ''}[${images} image${images === 1 ? '' : 's'} attached]` : '') });
+          const text = texts.join('\n') + (unshown ? `${texts.length ? '\n' : ''}[${unshown} image${unshown === 1 ? '' : 's'} attached]` : '');
+          items.push(shown.length ? { kind: 'user', text, attachments: shown } : { kind: 'user', text });
         }
         for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;

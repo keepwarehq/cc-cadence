@@ -1,13 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
+import * as fsp from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { Item, Transcript, TurnTranslator } from './transcript';
+import { Attachment, Item, Transcript, TurnTranslator } from './transcript';
 import { DEFAULT_MODEL, PERMISSION_MODES, effortChoices, PermissionMode, Profile, buildEnv, expandHome, isThirdParty, loadProfiles, modelChoices, resolveModel } from './profiles';
 import { TurnHandle, runTurn } from './runner';
 import { addProfile, keyName, manageProfiles, setApiKey } from './profileUi';
-import { deleteSession, listSessions, readTranscript } from './sessions';
+import { deleteSession, listSessions, parseTranscript, readSubagentTranscript, readTranscript } from './sessions';
 import { SettingsFile, writeSettingsFile } from './settingsFile';
-import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, nextAttachmentId, stagedName } from './attachments';
+import { MAX_IMAGE_BYTES, buildBlocks, classifyAttachment, imageFileName, isImageType, nextAttachmentId, stagedName } from './attachments';
 import { resultNotice } from './turnResult';
 
 const CHAT_KEY = 'ccprofile.chat';
@@ -17,10 +18,50 @@ const MODEL_KEY = 'ccprofile.modelChoice';
 /** Picker effort choice, shared by every profile ('default' / a claude --effort level) */
 const EFFORT_KEY = 'ccprofile.effort';
 const MAX_SAVED_ITEMS = 300;
+/** Task detail panel bounds: the newest items of a subagent transcript, each tool output clipped; a shell's stdout tail */
+const DETAIL_MAX_ITEMS = 400;
+const DETAIL_MAX_OUTPUT = 8000;
+const DETAIL_MAX_BYTES = 64 * 1024;
 /** viewType of the editor-tab chats; also named by the onWebviewPanel activation event in package.json */
 export const EDITOR_VIEW_TYPE = 'ccprofile.editor';
 
+/** Sent images older than this are pruned from the preview store; their bubbles fall back to a name chip */
+const IMAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 interface Status { model?: string; auth?: string; last?: string; rate?: string }
+
+/** Copies of sent images, served to the webviews as thumbnails / lightbox sources (extension storage, never the workspace) */
+function imageDir(ctx: vscode.ExtensionContext): vscode.Uri {
+  return vscode.Uri.joinPath(ctx.globalStorageUri, 'images');
+}
+
+/** Write one image into the preview store; ifMissing skips bytes that are already there (replays). Returns success. */
+async function writeImage(dir: vscode.Uri, file: string, base64: string, ifMissing = false): Promise<boolean> {
+  const dest = vscode.Uri.joinPath(dir, file);
+  try {
+    if (ifMissing) {
+      try { await vscode.workspace.fs.stat(dest); return true; } catch { /* not there yet */ }
+    }
+    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.writeFile(dest, Buffer.from(base64, 'base64'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pruneImages(dir: vscode.Uri): Promise<void> {
+  let entries: [string, vscode.FileType][];
+  try { entries = await vscode.workspace.fs.readDirectory(dir); } catch { return; }
+  const cutoff = Date.now() - IMAGE_RETENTION_MS;
+  for (const [name, type] of entries) {
+    if (type !== vscode.FileType.File) continue;
+    const uri = vscode.Uri.joinPath(dir, name);
+    try {
+      if ((await vscode.workspace.fs.stat(uri)).mtime < cutoff) await vscode.workspace.fs.delete(uri);
+    } catch { /* best effort */ }
+  }
+}
 
 /** An attachment waiting to be sent: images keep base64 in memory, files keep a source URI or blob bytes */
 interface PendingAttachment {
@@ -237,22 +278,79 @@ export class ChatSession implements vscode.Disposable {
     // busy stays true across interrupt-and-replace: the caller immediately starts the new turn
   }
 
+  /**
+   * The task detail panel asks for a task's full output (re-asked while it stays open on a running task):
+   * a subagent's own transcript (prompt, tool calls, replies), or the tail of a background shell's stdout
+   */
+  private async taskDetail(taskId: string): Promise<void> {
+    const task = this.transcript.items.find(x => x.kind === 'task' && x.taskId === taskId);
+    if (task?.kind !== 'task') return;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    let items: Item[] = [];
+    let text: string | undefined;
+    let truncated = false;
+    if (task.taskType === 'local_bash') {
+      if (task.outputFile) {
+        try {
+          const fh = await fsp.open(task.outputFile, 'r');
+          try {
+            const { size } = await fh.stat();
+            const len = Math.min(size, DETAIL_MAX_BYTES);
+            const buf = Buffer.alloc(len);
+            await fh.read(buf, 0, len, size - len);
+            text = buf.toString('utf8');
+            truncated = size > len;
+          } finally {
+            await fh.close();
+          }
+        } catch { /* gone (tmp cleaned) or not created yet */ }
+      }
+    } else {
+      if (this.sessionId && folder?.uri.scheme === 'file') items = await readSubagentTranscript(this.sessionId, folder.uri.fsPath, taskId);
+      if (!items.length && task.outputFile) {
+        try { items = parseTranscript(await fsp.readFile(task.outputFile, 'utf8'), { sidechain: true }); } catch { /* not there */ }
+      }
+      truncated = items.length > DETAIL_MAX_ITEMS;
+      items = items.slice(-DETAIL_MAX_ITEMS).map(it =>
+        it.kind === 'tool' && it.output && it.output.length > DETAIL_MAX_OUTPUT ? { ...it, output: it.output.slice(0, DETAIL_MAX_OUTPUT) + '…' } : it);
+    }
+    this.post({ type: 'taskDetail', taskId, items, text, truncated });
+  }
+
+  /** Replay a stored session, putting its user images back into the preview store so they render as thumbnails */
+  private async replay(id: string, cwd: string): Promise<Item[]> {
+    const dir = imageDir(this.ctx);
+    const files = new Map<string, Promise<boolean>>();
+    const items = await readTranscript(id, cwd, (mediaType, base64) => {
+      if (!isImageType(mediaType)) return undefined;
+      const file = imageFileName(mediaType, base64);
+      if (!files.has(file)) files.set(file, writeImage(dir, file, base64, true));
+      return file;
+    });
+    await Promise.all(files.values());
+    return items;
+  }
+
   /** Split pending attachments into image blocks and materialized file paths; clears nothing (send clears) */
   private async materializePending(folder: vscode.WorkspaceFolder): Promise<{
     images: { mediaType: string; base64: string }[];
     filePaths: string[];
-    names: { name: string; mediaType: string }[];
+    names: Attachment[];
   }> {
     const images: { mediaType: string; base64: string }[] = [];
     const filePaths: string[] = [];
-    const names: { name: string; mediaType: string }[] = [];
+    const names: Attachment[] = [];
     if (this.pending.some(a => a.kind === 'file')) {
       await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, '.ccprofile', 'attachments'));
     }
     for (const a of this.pending) {
       if (a.kind === 'image' && a.base64) {
-        images.push({ mediaType: a.mediaType ?? 'image/png', base64: a.base64 });
-        names.push({ name: a.name, mediaType: a.mediaType ?? 'image/png' });
+        const mediaType = a.mediaType ?? 'image/png';
+        images.push({ mediaType, base64: a.base64 });
+        // a preview copy for the bubble thumbnail; if it can't be written the bubble shows a name chip instead
+        const file = imageFileName(mediaType, a.base64);
+        const stored = await writeImage(imageDir(this.ctx), file, a.base64);
+        names.push(stored ? { name: a.name, mediaType, file } : { name: a.name, mediaType });
         continue;
       }
       const destName = stagedName(a.name, a.id);
@@ -419,7 +517,7 @@ export class ChatSession implements vscode.Disposable {
   async resumeSession(id: string): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') return this.notice('error', 'Open a local folder first (it never falls back to running in $HOME).');
-    const items = await readTranscript(id, folder.uri.fsPath);
+    const items = await this.replay(id, folder.uri.fsPath);
     if (!items.length) return this.notice('error', 'That session could not be loaded.');
     this.turn?.detach();
     this.turn = undefined;
@@ -434,7 +532,7 @@ export class ChatSession implements vscode.Disposable {
   async restore(id: string): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || folder.uri.scheme !== 'file') return;
-    const items = await readTranscript(id, folder.uri.fsPath);
+    const items = await this.replay(id, folder.uri.fsPath);
     if (!items.length) return;
     this.sessionId = id;
     this.transcript.reset(items);
@@ -471,6 +569,9 @@ export class ChatSession implements vscode.Disposable {
         break;
       case 'attachFile':
         if (typeof m.name === 'string' && typeof m.base64 === 'string') this.addDataAttachment(m.name, undefined, m.base64, m.cid);
+        break;
+      case 'taskDetail':
+        if (typeof m.taskId === 'string') void this.taskDetail(m.taskId);
         break;
       case 'removeAttachment':
         this.pending = this.pending.filter(a => a.id !== m.id);
@@ -548,7 +649,7 @@ export class ChatSession implements vscode.Disposable {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${uri('chat.css')}">
 </head>
-<body>
+<body data-images="${webview.asWebviewUri(imageDir(this.ctx))}">
 <div id="history-popup" hidden></div>
 <main id="log"></main>
 <footer>
@@ -595,6 +696,7 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
+    void pruneImages(imageDir(ctx));
     this.disposables.push(
       vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('ccprofile')) this.refreshAll(); }),
     );
@@ -602,6 +704,11 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
 
   private get media(): vscode.Uri {
     return vscode.Uri.joinPath(this.ctx.extensionUri, 'media');
+  }
+
+  /** What a chat webview may load: its own media plus the sent-image preview store */
+  private get roots(): vscode.Uri[] {
+    return [this.media, imageDir(this.ctx)];
   }
 
   // ---- shared preferences (model / effort / profile), read from and written to globalState ----
@@ -716,7 +823,7 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
       this.sessions.add(this.primary);
     }
     const session = this.primary;
-    view.webview.options = { enableScripts: true, localResourceRoots: [this.media] };
+    view.webview.options = { enableScripts: true, localResourceRoots: this.roots };
     session.wire(view.webview, this.media);
     view.onDidDispose(() => session.unwire(view.webview));
   }
@@ -733,7 +840,7 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
     const panel = vscode.window.createWebviewPanel(EDITOR_VIEW_TYPE, 'CC Cadence', { viewColumn: column, preserveFocus: false }, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [this.media],
+      localResourceRoots: this.roots,
     });
     this.adopt(panel, new ChatSession(this.ctx, this, false));
     // a fresh split: lock it so opening files doesn't land in the chat group — it stays its own split (like Claude Code)
@@ -757,7 +864,7 @@ export class ChatManager implements vscode.WebviewViewProvider, vscode.WebviewPa
 
   /** Bind an editor panel (new or revived) to its session */
   private adopt(panel: vscode.WebviewPanel, session: ChatSession): void {
-    panel.webview.options = { enableScripts: true, localResourceRoots: [this.media] };
+    panel.webview.options = { enableScripts: true, localResourceRoots: this.roots };
     panel.iconPath = vscode.Uri.joinPath(this.media, 'logo.svg');
     this.sessions.add(session);
     this.panels.set(session, panel);

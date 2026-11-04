@@ -30,8 +30,8 @@ const BODY = `
   </div>
 </footer>`;
 
-function boot(initialState) {
-  const dom = new JSDOM(`<!DOCTYPE html><body>${BODY}</body>`, { runScripts: 'outside-only', pretendToBeVisual: true });
+function boot(initialState, { images } = {}) {
+  const dom = new JSDOM(`<!DOCTYPE html><body${images ? ` data-images="${images}"` : ''}>${BODY}</body>`, { runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
   const posted = [];
   // webview state round-trips through JSON like VS Code's persisted state
@@ -312,7 +312,8 @@ test('task card renders spinner then ok with summary', async () => {
   await frame();
   const node = $('log').children[0];
   assert.equal(node.className, 'item task running');
-  assert.ok(node.querySelector('.state'));
+  assert.ok(node.querySelector('.tstate.running'), 'spinner');
+  assert.equal(node.querySelector('.name').textContent, 'Sleep then reply PONG');
   t.set(0, { kind: 'task', taskId: 't1', taskType: 'local_agent', description: 'Sleep then reply PONG', status: 'ok', summary: 'PONG' });
   await frame();
   assert.equal($('log').children[0].className, 'item task ok');
@@ -379,6 +380,55 @@ test('attachData carries a cid and state attachments carry no base64 thumb', asy
   const chip = $('chips').querySelector('.chip');
   assert.ok(chip, 'chip rendered');
   assert.ok(chip.querySelector('img'), 'thumbnail rendered from the webview cache despite thumbless state');
+  assert.ok(chip.classList.contains('tile'), 'a pending image with a thumbnail renders as a preview tile');
+  chip.querySelector('img').click();
+  const lb = window.document.querySelector('.lightbox');
+  assert.ok(lb && !lb.hidden, 'clicking the tile opens the lightbox');
+  assert.equal(lb.querySelector('img').getAttribute('src'), 'data:image/png;base64,aGk=');
+});
+
+test('sent images render as thumbnails from the preview store; click opens the lightbox, Esc closes it', async () => {
+  const { window, send, $, frame } = boot(undefined, { images: 'https://store.test/images' });
+  send({ ...STATE, items: [{ kind: 'user', text: 'look', profile: 'Claude (Max)', attachments: [
+    { name: 'shot.png', mediaType: 'image/png', file: 'abc.png' },
+    { name: 'notes.txt', mediaType: 'text/plain' },
+  ] }] });
+  await frame();
+  const node = $('log').children[0];
+  assert.equal(node.className, 'item user bubble');
+  const img = node.querySelector('.thumbs .thumb img');
+  assert.equal(img?.getAttribute('src'), 'https://store.test/images/abc.png');
+  assert.deepEqual([...node.querySelectorAll('.attachments .chip')].map(c => c.textContent), ['notes.txt'], 'non-images stay name chips');
+  node.querySelector('.thumb').click();
+  const lb = window.document.querySelector('.lightbox');
+  assert.equal(lb.hidden, false);
+  assert.equal(lb.querySelector('img').getAttribute('src'), 'https://store.test/images/abc.png');
+  assert.equal(lb.querySelector('.caption').textContent, 'shot.png');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(lb.hidden, true, 'Esc closes');
+  node.querySelector('.thumb').click();
+  lb.click();
+  assert.equal(lb.hidden, true, 'a click on the overlay closes');
+  assert.equal(window.document.querySelectorAll('[style]').length, 0, 'no inline styles (CSP)');
+});
+
+test('a sent image whose preview file is gone degrades to a name chip', async () => {
+  const { window, send, $, frame } = boot(undefined, { images: 'https://store.test/images' });
+  send({ ...STATE, items: [{ kind: 'user', text: 'x', attachments: [{ name: 'old.png', mediaType: 'image/png', file: 'gone.png' }] }] });
+  await frame();
+  const node = $('log').children[0];
+  node.querySelector('.thumb img').dispatchEvent(new window.Event('error'));
+  assert.equal(node.querySelector('.thumb'), null);
+  assert.equal(node.querySelector('.chip')?.textContent, 'old.png');
+});
+
+test('without a preview store, sent images show as name chips', async () => {
+  const { send, $, frame } = boot();
+  send({ ...STATE, items: [{ kind: 'user', text: 'x', attachments: [{ name: 'shot.png', mediaType: 'image/png', file: 'abc.png' }] }] });
+  await frame();
+  const node = $('log').children[0];
+  assert.equal(node.querySelector('.thumb'), null);
+  assert.equal(node.querySelector('.attachments .chip')?.textContent, 'shot.png');
 });
 
 
@@ -399,6 +449,63 @@ test('agents pill counts running tasks and the popup lists each with meta', asyn
   assert.ok(popup.textContent.includes('147.3k'), 'tokens formatted');
   pill.click();
   assert.equal(popup.hidden, true, 'pill toggles the popup closed');
+});
+
+test('a task card shows its name, current step and meta; clicking it opens the detail panel', async () => {
+  const { window, posted, send, $, frame } = boot();
+  send(STATE);
+  send({ type: 'op', op: 'push', item: { kind: 'task', taskId: 'k1', taskType: 'local_agent', description: 'Random math 3',
+    activity: 'Print random math results for 10s', status: 'running', durationMs: 4000, tokens: 13000 } });
+  await frame();
+  const card = $('log').children[0];
+  assert.equal(card.querySelector('.name').textContent, 'Random math 3', 'the name survives progress');
+  assert.equal(card.querySelector('.detail').textContent, 'Print random math results for 10s');
+  assert.equal(card.querySelector('.meta').textContent, '4s \u00b7 13k tokens');
+  card.click();
+  assert.deepEqual(posted.filter(m => m.type === 'taskDetail').pop(), { type: 'taskDetail', taskId: 'k1' });
+  const panel = window.document.querySelector('.taskpanel-backdrop');
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.querySelector('.taskpanel-head .title').textContent, 'Random math 3');
+  send({ type: 'taskDetail', taskId: 'k1', items: [
+    { kind: 'user', text: 'Answer random math questions' },
+    { kind: 'tool', id: 'b1', name: 'Bash', summary: 'python3 rand.py', status: 'ok', output: '37 x 48 = 1776' },
+    { kind: 'assistant', text: 'Done: **1776**' },
+  ] });
+  const body = panel.querySelector('.taskpanel-body');
+  assert.deepEqual([...body.children].map(n => n.className), ['item user bubble', 'item tool ok f-bash', 'item assistant']);
+  assert.equal(body.querySelector('.item.user .tag').textContent, 'Prompt', 'the first user turn is labelled as the prompt');
+  // a refresh with one more item keeps the unchanged nodes (an expanded tool output stays open)
+  const toolNode = body.children[1];
+  send({ type: 'taskDetail', taskId: 'k1', items: [
+    { kind: 'user', text: 'Answer random math questions' },
+    { kind: 'tool', id: 'b1', name: 'Bash', summary: 'python3 rand.py', status: 'ok', output: '37 x 48 = 1776' },
+    { kind: 'assistant', text: 'Done: **1776**' },
+    { kind: 'assistant', text: 'And 7! = 5040' },
+  ] });
+  assert.equal(body.children.length, 4);
+  assert.equal(body.children[1], toolNode, 'unchanged node kept');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(panel.hidden, true, 'Esc closes');
+  assert.equal(window.document.querySelectorAll('[style]').length, 0, 'no inline styles (CSP)');
+});
+
+test('a shell task panel shows its output text; the agents popup row opens the panel too', async () => {
+  const { window, posted, send, $, frame } = boot();
+  send(STATE);
+  send({ type: 'op', op: 'push', item: { kind: 'task', taskId: 'sh', taskType: 'local_bash', description: 'Background shell',
+    status: 'ok', summary: 'exit code 0', durationMs: 3000, outputFile: '/tmp/x.output' } });
+  await frame();
+  $('agents').click();
+  const row = $('agents-popup').querySelector('.agent-row');
+  assert.ok(row.textContent.includes('Background shell') && row.textContent.includes('exit code 0'));
+  row.click();
+  assert.equal($('agents-popup').hidden, true, 'popup closes');
+  assert.equal(posted.filter(m => m.type === 'taskDetail').pop().taskId, 'sh');
+  send({ type: 'taskDetail', taskId: 'sh', items: [], text: 'line 1\nline 2\n' });
+  const panel = window.document.querySelector('.taskpanel-backdrop');
+  assert.equal(panel.querySelector('.taskpanel-output').textContent, 'line 1\nline 2\n');
+  panel.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+  assert.equal(panel.hidden, true, 'a backdrop click closes');
 });
 
 test('agents pill hides when there are no task items', async () => {

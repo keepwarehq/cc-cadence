@@ -133,7 +133,8 @@ test('system task events become task cards even with parent_tool_use_id', () => 
   assert.equal(card.status, 'running');
   tr.handle({ type: 'system', subtype: 'task_progress', task_id: 't1', description: 'Running sleep' });
   assert.equal(t.items[0].status, 'running');
-  assert.equal(t.items[0].description, 'Running sleep');
+  assert.equal(t.items[0].description, 'Sleep then reply PONG', 'the name stays');
+  assert.equal(t.items[0].activity, 'sleep', 'progress becomes the current step');
   tr.handle({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', summary: 'PONG' });
   assert.equal(t.items[0].status, 'ok');
   assert.equal(t.items[0].summary, 'PONG');
@@ -214,4 +215,62 @@ test('redacted thinking deltas (empty text) capture the estimated token count', 
   assert.equal(t.items[0].kind, 'thinking');
   assert.equal(t.items[0].text, '');
   assert.equal(t.items[0].tokens, 50);
+});
+
+// Real CLI 2.1.317 events: two background agents, each running one Bash shell. The shells arrive as their own
+// task_started events (local_bash, owned_by_subagent, parent_task_id) and must not become extra cards.
+test('tasks owned by a subagent stay collapsed: two agents give two cards, not four', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  const replay = readFileSync(new URL('./fixtures/subagents.jsonl', import.meta.url), 'utf8')
+    .trim().split('\n').map(l => JSON.parse(l));
+  const shellStarts = replay.filter(e => e.subtype === 'task_started' && e.owned_by_subagent);
+  assert.equal(shellStarts.length, 2, 'fixture carries the two subagent shells');
+  const runningAt = [];
+  for (const e of replay) {
+    tr.handle(e);
+    runningAt.push(t.items.filter(x => x.kind === 'task' && x.status === 'running').length);
+  }
+  const cards = t.items.filter(x => x.kind === 'task');
+  assert.deepEqual(cards.map(c => [c.taskType, c.description, c.activity, c.status]), [
+    ['local_agent', 'Sleep 30s subagent A', 'Sleep for 30 seconds using python3', 'ok'],
+    ['local_agent', 'Sleep 30s subagent B', 'Sleep for 30 seconds via python3', 'ok'],
+  ]);
+  assert.equal(Math.max(...runningAt), 2, 'the agents pill never counts more than the two agents');
+  assert.equal(tr.pendingTasks, 0);
+});
+
+// Real CLI 2.1.317 round: a background agent, a foreground agent and a background Bash — top-level tool calls,
+// their results and every task event, in stream order
+test('each launched task takes over its tool card: one card per agent or shell, with name, step and output file', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  const replay = readFileSync(new URL('./fixtures/tasks-mixed.jsonl', import.meta.url), 'utf8')
+    .trim().split('\n').map(l => JSON.parse(l));
+  let midway;
+  for (const e of replay) {
+    tr.handle(e);
+    if (e.subtype === 'task_progress') midway = structuredClone(t.items);
+  }
+  assert.deepEqual(t.items.map(x => x.kind), ['task', 'task', 'task'], 'no leftover "✓ Agent" / "✓ Bash" tool cards');
+  assert.deepEqual(t.items.map(x => [x.taskType, x.description, x.background ?? false, x.status, x.summary]), [
+    ['local_agent', 'Background sleeper', true, 'ok', 'A'],
+    ['local_agent', 'Foreground echo', false, 'ok', 'B'],
+    ['local_bash', 'Background shell', true, 'ok', 'Background command "Background shell" completed (exit code 0)'],
+  ]);
+  assert.equal(t.items[0].activity, 'Sleep for 5 seconds using python3');
+  assert.equal(t.items[2].outputFile, '/tmp/tasks/bmzmb8w85.output');
+  assert.ok(t.items.every(x => typeof x.startedAt === 'number' && typeof x.durationMs === 'number'));
+  // mid-round: the background launch ack did not mark the still-running agent as done
+  assert.equal(midway[0].status, 'running');
+});
+
+test('a streamed tool_use replayed by the full assistant message does not resurrect a merged tool card', () => {
+  const t = new Transcript();
+  const tr = new TurnTranslator(t);
+  tr.handle({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm1' } } });
+  tr.handle({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_a', name: 'Agent', input: {} } } });
+  tr.handle({ type: 'system', subtype: 'task_started', task_id: 'k1', tool_use_id: 'call_a', task_type: 'local_agent', description: 'Review', is_backgrounded: true });
+  tr.handle({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'call_a', name: 'Agent', input: { description: 'Review' } }] } });
+  assert.deepEqual(t.items.map(x => [x.kind, x.description]), [['task', 'Review']]);
 });

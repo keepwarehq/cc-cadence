@@ -1,9 +1,24 @@
+/** A sent attachment as shown in the transcript; `file` names a sent image's copy in the preview store (never base64) */
+export interface Attachment { name: string; mediaType: string; file?: string }
+
 export type Item =
-  | { kind: 'user'; text: string; profile?: string; attachments?: { name: string; mediaType: string }[] }
+  | { kind: 'user'; text: string; profile?: string; attachments?: Attachment[] }
   | { kind: 'assistant'; text: string }
   | { kind: 'thinking'; text: string; tokens?: number }
   | { kind: 'tool'; id: string; name: string; summary: string; status: 'running' | 'ok' | 'error'; output?: string }
-  | { kind: 'task'; taskId: string; toolUseId?: string; taskType: string; description: string; status: 'running' | 'ok' | 'error'; summary?: string; durationMs?: number; tokens?: number }
+  | {
+      kind: 'task'; taskId: string; toolUseId?: string; taskType: string;
+      /** the task's name as launched ("Random math 3"); never overwritten by progress */
+      description: string;
+      /** latest step reported while running ("Sleep for 30 seconds using python3") */
+      activity?: string;
+      background?: boolean;
+      /** wall-clock start (ms) so the webview can tick a live elapsed timer */
+      startedAt?: number;
+      /** the CLI's output file: a background shell's stdout (an agent's transcript is found by session + task id) */
+      outputFile?: string;
+      status: 'running' | 'ok' | 'error'; summary?: string; durationMs?: number; tokens?: number;
+    }
   | { kind: 'notice'; level: 'info' | 'warn' | 'error'; text: string; action?: 'checkTasks' | 'setKey'; profileId?: string };
 
 /** Incremental ops sent to the webview; the webview replays them into the same items */
@@ -54,7 +69,12 @@ interface TaskEvent {
   status?: string;
   summary?: string;
   usage?: TaskUsage;
+  output_file?: string;
+  is_backgrounded?: boolean;
   tasks?: Array<{ task_id?: string }>;
+  /** set on tasks a subagent spawned itself (its Bash shells, nested agents) */
+  owned_by_subagent?: boolean;
+  parent_task_id?: string;
 }
 
 export interface TurnHooks {
@@ -134,11 +154,14 @@ export class TurnTranslator {
   }
 
   /** Push the user message together with its attachment metadata (names only, never base64) */
-  setUserAttachments(text: string, attachments: { name: string; mediaType: string }[]): void {
+  setUserAttachments(text: string, attachments: Attachment[]): void {
     this.t.push(attachments.length ? { kind: 'user', text, attachments } : { kind: 'user', text });
   }
 
   private onSystem(e: TaskEvent): void {
+    // a subagent's own tasks are its internals, like its tool calls: no card and no count in the agents pill.
+    // Their later progress/notification events carry neither flag but find no card, so they drop out too.
+    if (e.owned_by_subagent || e.parent_task_id) return;
     switch (e.subtype) {
       case 'task_started':
         this.upsertTask(e);
@@ -149,7 +172,7 @@ export class TurnTranslator {
         if (it?.kind === 'task') {
           this.t.set(i!, {
             ...it,
-            description: e.description ?? it.description,
+            activity: e.description ? e.description.replace(/^Running /, '') : it.activity,
             durationMs: e.usage?.duration_ms ?? it.durationMs,
             tokens: e.usage?.total_tokens ?? it.tokens,
           });
@@ -164,7 +187,9 @@ export class TurnTranslator {
             ...it,
             status: e.status === 'completed' ? 'ok' : 'error',
             summary: e.summary ?? it.summary,
-            durationMs: e.usage?.duration_ms ?? it.durationMs,
+            outputFile: e.output_file || it.outputFile,
+            // a shell's notification carries no usage: time it from the card's own start
+            durationMs: e.usage?.duration_ms ?? (it.startedAt ? Date.now() - it.startedAt : it.durationMs),
             tokens: e.usage?.total_tokens ?? it.tokens,
           });
         }
@@ -184,16 +209,27 @@ export class TurnTranslator {
       this.t.set(i!, { ...prev, description: e.description ?? prev.description });
       return;
     }
-    this.taskItem.set(e.task_id, this.t.push({
+    const card: Item = {
       kind: 'task',
       taskId: e.task_id,
       toolUseId: typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
       taskType: String(e.task_type ?? ''),
       description: String(e.description ?? ''),
+      background: e.is_backgrounded === true ? true : undefined,
+      startedAt: Date.now(),
       status: 'running',
       durationMs: e.usage?.duration_ms,
       tokens: e.usage?.total_tokens,
-    }));
+    };
+    // the Agent / background Bash call that launched the task already has a tool card: the task card takes its slot,
+    // so each agent is one card instead of a "✓ Agent" line (the launch ack) plus a separate task line
+    const at = card.toolUseId ? this.toolItem.get(card.toolUseId) : undefined;
+    if (at !== undefined && this.t.items[at]?.kind === 'tool') {
+      this.t.set(at, card);
+      this.taskItem.set(e.task_id, at);
+    } else {
+      this.taskItem.set(e.task_id, this.t.push(card));
+    }
   }
 
   private onStream(ev: any): void {
@@ -245,7 +281,15 @@ export class TurnTranslator {
       if (b?.type !== 'tool_result') continue;
       const i = this.toolItem.get(b.tool_use_id);
       const it = i === undefined ? undefined : this.t.items[i];
-      if (i === undefined || it?.kind !== 'tool') continue;
+      if (i === undefined) continue;
+      if (it?.kind === 'task') {
+        // the launch ack of a background task ("Output is being written to: …"), or a foreground agent's hand-back;
+        // the card's state comes from task_notification — only remember where a shell writes its output
+        const file = /Output is being written to: (\S+\.output)/.exec(resultText(b.content))?.[1];
+        if (file && !it.outputFile) this.t.set(i, { ...it, outputFile: file });
+        continue;
+      }
+      if (it?.kind !== 'tool') continue;
       this.t.set(i, { ...it, status: b.is_error ? 'error' : 'ok', output: resultText(b.content) });
     }
   }
@@ -253,6 +297,7 @@ export class TurnTranslator {
   private upsertTool(b: any): void {
     const i = this.toolItem.get(b.id);
     const prev = i === undefined ? undefined : this.t.items[i];
+    if (i !== undefined && prev?.kind !== 'tool') return; // merged into its task card
     const summary = summarize(b.input);
     if (prev?.kind === 'tool') {
       if (summary && summary !== prev.summary) this.t.set(i!, { ...prev, summary });

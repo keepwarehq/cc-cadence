@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { InputBlock } from './runner';
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -38,6 +38,13 @@ export function classifyAttachment(name: string, mediaType: string | undefined, 
 /** Collision-free staging file name: unique uid prefix plus a sanitized original name */
 export function stagedName(name: string, uid: string): string {
   return `${uid}-${name.replace(/[^\w.-]+/g, '_')}`;
+}
+
+const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+
+/** Content-addressed file name for a sent image in the preview store: the same bytes always land on the same file */
+export function imageFileName(mediaType: string, base64: string): string {
+  return `${createHash('sha256').update(base64).digest('hex').slice(0, 32)}.${IMAGE_EXT[mediaType] ?? 'png'}`;
 }
 
 function isImageName(name: string): boolean {

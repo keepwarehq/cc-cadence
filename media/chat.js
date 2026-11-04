@@ -17,6 +17,8 @@
   const profilePopup = $('profile-popup');
   const fileInput = $('file-input');
   const statusEl = $('status');
+  /** webview URI of the host's sent-image preview store; empty (tests, old hosts) → sent images show as name chips */
+  const imageBase = document.body.dataset.images || '';
 
   /** @type {any[]} */
   let items = [];
@@ -87,19 +89,67 @@
     ta.remove();
   }
 
+  /** A sent image: clickable thumbnail that opens the lightbox; a store miss (pruned file) degrades to a name chip */
+  function thumbButton(/** @type {string} */ src, /** @type {string} */ name) {
+    const b = el('button', 'thumb');
+    b.title = name;
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = name;
+    img.loading = 'lazy';
+    img.addEventListener('error', () => b.replaceWith(el('span', 'chip', name)));
+    b.appendChild(img);
+    b.addEventListener('click', () => openLightbox(src, name));
+    return b;
+  }
+
+  // ---- Lightbox: full-size view of an image; click anywhere or Esc closes ----
+
+  /** @type {HTMLElement | undefined} */
+  let lightbox;
+
+  function openLightbox(/** @type {string} */ src, /** @type {string} */ name) {
+    if (!lightbox) {
+      lightbox = el('div', 'lightbox');
+      lightbox.setAttribute('role', 'dialog');
+      lightbox.setAttribute('aria-modal', 'true');
+      lightbox.append(document.createElement('img'), el('div', 'caption'));
+      lightbox.addEventListener('click', closeLightbox);
+      document.body.appendChild(lightbox);
+    }
+    const img = /** @type {HTMLImageElement} */ (lightbox.querySelector('img'));
+    img.src = src;
+    img.alt = name;
+    /** @type {HTMLElement} */ (lightbox.querySelector('.caption')).textContent = name;
+    lightbox.hidden = false;
+  }
+
+  function closeLightbox() {
+    if (lightbox) lightbox.hidden = true;
+  }
+
   function render(item) {
     const node = el('div', 'item ' + item.kind);
     switch (item.kind) {
-      case 'user':
+      case 'user': {
         node.classList.add('bubble');
         if (item.profile) node.appendChild(el('div', 'tag', item.profile));
-        if (item.attachments?.length) {
+        const atts = item.attachments || [];
+        const pics = imageBase ? atts.filter(a => a.file) : [];
+        const others = atts.filter(a => !pics.includes(a));
+        if (pics.length) {
+          const row = el('div', 'thumbs');
+          for (const a of pics) row.appendChild(thumbButton(imageBase + '/' + encodeURIComponent(a.file), a.name));
+          node.appendChild(row);
+        }
+        if (others.length) {
           const row = el('div', 'attachments');
-          for (const a of item.attachments) row.appendChild(el('span', 'chip', a.name));
+          for (const a of others) row.appendChild(el('span', 'chip', a.name));
           node.appendChild(row);
         }
         node.appendChild(el('div', 'body', item.text));
         break;
+      }
       case 'assistant':
         node.innerHTML = md(item.text);
         addCopyButtons(node);
@@ -132,14 +182,19 @@
         break;
       }
       case 'task': {
+        // one card per background agent / shell: name + live meta, then the current step or the result; click → details
         node.classList.add(item.status);
-        const row = el('div', 'taskrow');
-        row.append(
-          el('span', 'state', item.status === 'running' ? '◔' : item.status === 'ok' ? '✓' : '✗'),
-          el('span', 'name', item.description),
+        const head = el('div', 'taskhead');
+        head.append(
+          el('span', 'tstate ' + item.status, stateGlyph(item.status)),
+          el('span', 'name ' + taskKind(item), item.description || 'Background task'),
+          el('span', 'meta', taskMeta(item)),
+          el('span', 'open', 'Details \u203a'),
         );
-        if (item.summary) row.appendChild(el('span', 'summary', item.summary));
-        node.appendChild(row);
+        node.appendChild(head);
+        node.appendChild(el('div', 'detail', taskLine(item)));
+        node.title = 'Show details';
+        node.addEventListener('click', () => openTaskPanel(item.taskId));
         break;
       }
       case 'notice':
@@ -253,6 +308,26 @@
     return n + ' tokens';
   }
 
+  function stateGlyph(/** @type {string} */ status) {
+    return status === 'ok' ? '\u2713' : status === 'error' ? '\u2717' : ''; // running: a CSS spinner
+  }
+
+  function taskKind(item) {
+    return item.taskType === 'local_bash' ? 't-shell' : 't-agent';
+  }
+
+  /** "12s · 14.7k tokens": a running task ticks from its start time; a finished one shows its final duration */
+  function taskMeta(item) {
+    const ms = item.status === 'running' && item.startedAt ? Date.now() - item.startedAt : item.durationMs;
+    return [fmtDuration(ms), fmtTokens(item.tokens)].filter(Boolean).join(' \u00b7 ');
+  }
+
+  /** The card's second line: what it is doing now, or how it ended */
+  function taskLine(item) {
+    if (item.status === 'running') return item.activity || (item.background ? 'Running in the background\u2026' : 'Working\u2026');
+    return item.summary || (item.status === 'ok' ? 'Done' : 'Failed');
+  }
+
   function modeLabel(mode) {
     return mode === 'bypassPermissions' ? 'Bypass' : mode.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
   }
@@ -350,7 +425,125 @@
     agentsBtn.hidden = items.every(x => x?.kind !== 'task');
     agentsBtn.textContent = '\u26a1' + (running.length ? running.length : '');
     agentsBtn.classList.toggle('live', running.length > 0);
+    agentsBtn.title = running.length ? `${running.length} of ${items.filter(x => x?.kind === 'task').length} background tasks running` : 'Background tasks';
     if (!agentsBtn.hidden && !agentsPopup.hidden) renderAgentsPopup();
+    if (panel && !panel.hidden) refreshPanelHead();
+    syncTicker();
+  }
+
+  // ---- Live elapsed time on running task cards (only while the CLI is alive: a running task implies it) ----
+
+  let ticker = 0;
+
+  function syncTicker() {
+    const live = busy && items.some(x => x?.kind === 'task' && x.status === 'running');
+    if (live && !ticker) ticker = setInterval(tick, 1000);
+    else if (!live && ticker) { clearInterval(ticker); ticker = 0; }
+  }
+
+  function tick() {
+    items.forEach((x, i) => {
+      if (x?.kind !== 'task' || x.status !== 'running') return;
+      const m = log.children[i]?.querySelector('.taskhead .meta');
+      if (m) m.textContent = taskMeta(x);
+    });
+    if (!agentsPopup.hidden) renderAgentsPopup();
+    if (panel && !panel.hidden) refreshPanelHead();
+  }
+
+  // ---- Task detail panel: a subagent's full transcript (or a shell's output), refreshed while it runs ----
+
+  /** @type {HTMLElement | undefined} */
+  let panel;
+  let panelTask = '';
+  let panelPoll = 0;
+  /** JSON of each rendered panel item, so a refresh only re-renders what changed (keeps expanded tool output open) */
+  /** @type {string[]} */
+  let panelSeen = [];
+
+  function panelPart(/** @type {string} */ cls) {
+    return /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (panel).querySelector(cls));
+  }
+
+  function openTaskPanel(/** @type {string} */ taskId) {
+    if (!panel) {
+      panel = el('div', 'taskpanel-backdrop');
+      const box = el('div', 'taskpanel');
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      const head = el('header', 'taskpanel-head');
+      const close = el('button', 'close', '\u00d7');
+      close.title = 'Close (Esc)';
+      close.addEventListener('click', closeTaskPanel);
+      head.append(el('span', 'tstate'), el('span', 'title'), el('span', 'meta'), close);
+      box.append(head, el('div', 'taskpanel-sub'), el('div', 'taskpanel-note'), el('div', 'taskpanel-body'));
+      panel.appendChild(box);
+      panel.addEventListener('mousedown', e => { if (e.target === panel) closeTaskPanel(); });
+      document.body.appendChild(panel);
+    }
+    panelTask = taskId;
+    panelSeen = [];
+    panel.hidden = false;
+    panelPart('.taskpanel-note').hidden = true;
+    panelPart('.taskpanel-body').replaceChildren(el('div', 'taskpanel-empty', 'Loading\u2026'));
+    refreshPanelHead();
+    vscode.postMessage({ type: 'taskDetail', taskId });
+  }
+
+  function closeTaskPanel() {
+    if (panel) panel.hidden = true;
+    panelTask = '';
+    clearTimeout(panelPoll);
+  }
+
+  function panelTaskItem() {
+    return items.find(x => x?.kind === 'task' && x.taskId === panelTask);
+  }
+
+  function refreshPanelHead() {
+    const t = panelTaskItem();
+    if (!t) return closeTaskPanel(); // the chat was cleared or replaced
+    const st = panelPart('.taskpanel-head .tstate');
+    st.className = 'tstate ' + t.status;
+    st.textContent = stateGlyph(t.status);
+    panelPart('.taskpanel-head .title').textContent = t.description || 'Background task';
+    panelPart('.taskpanel-head .meta').textContent = taskMeta(t);
+    const sub = panelPart('.taskpanel-sub');
+    sub.className = 'taskpanel-sub ' + t.status;
+    sub.textContent = taskLine(t);
+  }
+
+  function renderPanelBody(m) {
+    const body = panelPart('.taskpanel-body');
+    const first = !panelSeen.length;
+    const stick = first || body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const note = panelPart('.taskpanel-note');
+    note.hidden = !m.truncated;
+    note.textContent = m.truncated ? 'Showing the most recent part only.' : '';
+    const running = panelTaskItem()?.status === 'running';
+    const list = Array.isArray(m.items) ? m.items.map((it, i) => (i === 0 && it.kind === 'user' ? { ...it, profile: 'Prompt' } : it)) : [];
+    if (list.length) {
+      if (first) body.replaceChildren();
+      list.forEach((it, i) => {
+        const json = JSON.stringify(it);
+        if (panelSeen[i] === json) return;
+        const node = render(it);
+        if (body.children[i]) body.children[i].replaceWith(node);
+        else body.appendChild(node);
+        panelSeen[i] = json;
+      });
+      while (body.children.length > list.length) body.lastChild?.remove();
+      panelSeen.length = list.length;
+    } else {
+      panelSeen = [];
+      const text = typeof m.text === 'string' && m.text ? m.text : '';
+      body.replaceChildren(text
+        ? el('pre', 'taskpanel-output', text)
+        : el('div', 'taskpanel-empty', running ? 'Nothing recorded yet\u2026' : 'No output was recorded for this task.'));
+    }
+    if (stick) body.scrollTop = body.scrollHeight;
+    clearTimeout(panelPoll);
+    if (running && busy) panelPoll = setTimeout(() => vscode.postMessage({ type: 'taskDetail', taskId: panelTask }), 1500);
   }
 
   function renderAgentsPopup() {
@@ -358,15 +551,14 @@
     agentsPopup.replaceChildren(...(tasks.length
       ? tasks.map(x => {
           const row = el('div', 'agent-row ' + x.status);
-          row.append(el('span', 'state', x.status === 'running' ? '\u25d4' : x.status === 'ok' ? '\u2713' : '\u2717'),
-                     el('span', 'name', x.description));
-          const meta = [fmtDuration(x.durationMs), fmtTokens(x.tokens)].filter(Boolean).join(' \u00b7 ');
+          row.append(el('span', 'tstate ' + x.status, stateGlyph(x.status)),
+                     el('span', 'name', x.description),
+                     el('span', 'sub', taskLine(x)));
+          const meta = taskMeta(x);
           if (meta) row.appendChild(el('span', 'meta', meta));
           row.addEventListener('click', () => {
-            const i = items.indexOf(x);
-            const node = log.children[i];
-            if (node) node.scrollIntoView({ block: 'center' });
             closeAgents();
+            openTaskPanel(x.taskId);
           });
           return row;
         })
@@ -380,12 +572,14 @@
 
   function renderChips() {
     chips.replaceChildren(...attachments.map(a => {
-      const c = el('span', 'chip' + (a.kind === 'image' ? ' img' : ''));
       const thumb = thumbs.get(a.id);
+      const c = el('span', 'chip' + (a.kind === 'image' ? ' img' : '') + (thumb ? ' tile' : ''));
       if (thumb) {
+        c.title = a.name;
         const img = document.createElement('img');
         img.src = thumb;
         img.alt = a.name;
+        img.addEventListener('click', () => openLightbox(thumb, a.name));
         c.appendChild(img);
       }
       c.appendChild(el('span', 'chipname', a.name));
@@ -427,6 +621,7 @@
     busy = b;
     stopBtn.hidden = !b;
     markStreaming();
+    syncTicker();
   }
 
   function send() {
@@ -502,6 +697,8 @@
   historySearch.addEventListener('input', renderHistoryList);
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
+    closeLightbox();
+    closeTaskPanel();
     closeHistory();
     closeModeMenu();
     closeProfileMenu();
@@ -725,6 +922,9 @@
     else if (m.type === 'busy') setBusy(m.busy);
     else if (m.type === 'status') statusEl.textContent = m.text || '';
     else if (m.type === 'session') remember({ sessionId: m.sessionId });
+    else if (m.type === 'taskDetail') {
+      if (panel && !panel.hidden && m.taskId === panelTask) renderPanelBody(m);
+    }
     else if (m.type === 'thumbs') {
       for (const th of m.thumbs || []) thumbs.set(th.id, th.thumb);
       renderChips();

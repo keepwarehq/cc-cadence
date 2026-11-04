@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'ccprofile-sessions-'));
-const { configDir, slugFor, listSessions, readTranscript, deleteSession } = await import('../out/sessions.js');
+const { configDir, slugFor, listSessions, readTranscript, deleteSession, readSubagentTranscript } = await import('../out/sessions.js');
 
 test('slugFor replaces every non-alphanumeric character with a dash', () => {
   assert.equal(slugFor('/home/u.code/my_app'), '-home-u-code-my-app');
@@ -72,5 +72,48 @@ test('readTranscript replays array-content user messages (text and image blocks)
   assert.equal(items[0].text.includes('what is this?'), true);
   assert.equal(items[0].text.includes('image'), true);
   assert.equal(items[1].text, 'a screenshot');
+  rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+});
+
+test('readTranscript hands image blocks to onImage and shows them as attachments instead of placeholder text', async () => {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-w3');
+  mkdirSync(dir, { recursive: true });
+  const id = 'ffffffff-1111-2222-3333-444444444444';
+  const img = data => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } });
+  writeFileSync(join(dir, `${id}.jsonl`), [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'two shots' }, img('aGk='), img('eW8=')] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [img('c2tpcA==')] } }),
+    '',
+  ].join('\n'), 'utf8');
+  const seen = [];
+  const items = await readTranscript(id, '/w3', (mediaType, base64) => {
+    seen.push([mediaType, base64]);
+    return base64 === 'c2tpcA==' ? undefined : `${base64.slice(0, 2)}.png`;
+  });
+  assert.deepEqual(seen, [['image/png', 'aGk='], ['image/png', 'eW8='], ['image/png', 'c2tpcA==']]);
+  assert.deepEqual(items[0], { kind: 'user', text: 'two shots', attachments: [
+    { name: 'image-1.png', mediaType: 'image/png', file: 'aG.png' },
+    { name: 'image-2.png', mediaType: 'image/png', file: 'eW.png' },
+  ] });
+  // a declined image keeps the placeholder
+  assert.deepEqual(items[1], { kind: 'user', text: '[1 image attached]' });
+  rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+});
+
+test('readSubagentTranscript replays a subagent transcript (all sidechain records) for the detail panel', async () => {
+  const sid = '99999999-1111-2222-3333-444444444444';
+  const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-w4', sid, 'subagents');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'agent-a76a.jsonl'), [
+    JSON.stringify({ isSidechain: true, agentId: 'a76a', type: 'user', message: { role: 'user', content: 'Run sleep then reply A' } }),
+    JSON.stringify({ isSidechain: true, agentId: 'a76a', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'sleep 5' } }] } }),
+    JSON.stringify({ isSidechain: true, agentId: 'a76a', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b1', content: '(Bash completed with no output)' }] } }),
+    JSON.stringify({ isSidechain: true, agentId: 'a76a', type: 'assistant', message: { content: [{ type: 'text', text: 'A' }] } }),
+    '',
+  ].join('\n'), 'utf8');
+  const items = await readSubagentTranscript(sid, '/w4', 'a76a');
+  assert.deepEqual(items.map(i => i.kind), ['user', 'tool', 'assistant']);
+  assert.equal(items[1].output, '(Bash completed with no output)');
+  assert.deepEqual(await readSubagentTranscript(sid, '/w4', 'missing'), []);
   rmSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
 });

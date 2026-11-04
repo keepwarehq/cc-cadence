@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { MAX_IMAGE_BYTES, buildBlocks, validateImage, nextAttachmentId, isImageType, classifyAttachment, stagedName } = await import('../out/attachments.js');
+const { MAX_IMAGE_BYTES, buildBlocks, validateImage, nextAttachmentId, isImageType, classifyAttachment, stagedName, imageFileName } = await import('../out/attachments.js');
 
 test('buildBlocks puts image blocks first, then one text block with the attached-file list', () => {
   const blocks = buildBlocks('look at this', [{ mediaType: 'image/png', base64: 'aGk=' }], ['docs/spec.md', 'notes.txt']);
@@ -52,4 +52,13 @@ test('classifyAttachment rejects oversized images, accepts image types by name f
 test('stagedName is unique per uid and sanitizes the file name', () => {
   assert.notEqual(stagedName('config.json', 'u1'), stagedName('config.json', 'u2'));
   assert.equal(stagedName('my file (1).pdf', 'u1'), 'u1-my_file_1_.pdf');
+});
+
+test('imageFileName is content-addressed with an extension from the media type', () => {
+  const a = imageFileName('image/png', 'aGk=');
+  assert.match(a, /^[0-9a-f]{32}\.png$/);
+  assert.equal(imageFileName('image/png', 'aGk='), a, 'same bytes → same file');
+  assert.notEqual(imageFileName('image/png', 'eW8='), a);
+  assert.match(imageFileName('image/jpeg', 'aGk='), /\.jpg$/);
+  assert.match(imageFileName('image/webp', 'aGk='), /\.webp$/);
 });
