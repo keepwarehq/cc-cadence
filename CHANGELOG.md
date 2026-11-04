@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.16 — Tabs survive a reload
+
+2026-11-04
+
+- **Editor tabs come back after "Reload Window".** Each CC Cadence tab reopens with its conversation
+  (replayed from the claude session), its permission mode and any half-typed draft, and the next
+  message continues the same session.
+- **Missing API key is one click to fix.** API keys live in each machine's keychain and are not
+  carried over by Settings Sync, so a profile synced from another machine has no key yet; the error
+  now says so and has a **Set API key** button.
+
 ## 0.0.15 — Multi-session editor tabs
 
 2026-11-04
