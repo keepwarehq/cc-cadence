@@ -2,7 +2,7 @@
   "name": "cc-cadence",
   "displayName": "CC Cadence",
   "description": "Chat in your editor with Claude (Max subscription via the local claude CLI) and any Anthropic-compatible model — switch models, keep the cadence.",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "publisher": "keepware",
   "license": "MIT",
   "engines": {

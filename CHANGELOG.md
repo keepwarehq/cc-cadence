@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.0.17 — Agent cards and image previews
+
+2026-11-04
+
+- **One card per background agent.** Each card shows the agent's name, a live timer and token count,
+  what it is doing right now, and its result when it finishes. The duplicate "✓ Agent" line is gone,
+  and shells a subagent runs no longer appear as extra tasks — five agents now count as five, not ten.
+- **Click a card for the details.** A panel shows the subagent's whole run — its prompt, every tool
+  call with its output, and its replies — updating live while it works and still there after a window
+  reload. Background shells show their output. Rows in the ⚡ popup open the same panel.
+- **Image previews.** Attached images show as thumbnails in the composer and in your sent messages;
+  click one to see it full size. Sessions reopened from history show their images again.
+- **Nicer message bubbles.** Your messages stay inside the centered column, right-aligned with the
+  replies, tinted with the theme accent, with the model label above the bubble.
+
 ## 0.0.16 — Tabs survive a reload
 
 2026-11-04
