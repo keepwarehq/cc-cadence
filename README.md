@@ -1,11 +1,12 @@
 # CC Cadence
 
-Chat in your editor with Claude (Max subscription) and any Anthropic-compatible model — switch
-models, keep the cadence. Driven by the local `claude` CLI. Free, by
+Chat in your editor with Claude — your Max subscription, or several Claude accounts side by side
+(say one per employer, picked per tab) — and any Anthropic-compatible model. Switch models, keep
+the cadence. Driven by the local `claude` CLI. Free, by
 [Keepware](https://www.keepware.dev/cc-cadence).
 
-[![Version](https://img.shields.io/visual-studio-marketplace/v/keepware.cc-cadence?label=marketplace)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/keepware.cc-cadence)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
+[![Version](https://vsmarketplacebadges.dev/version-short/keepware.cc-cadence.svg)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
+[![Installs](https://vsmarketplacebadges.dev/installs-short/keepware.cc-cadence.svg)](https://marketplace.visualstudio.com/items?itemName=keepware.cc-cadence)
 
 ## Install
 
